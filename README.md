@@ -1,4 +1,4 @@
-# Code to support Lynall 2019
+# Code to support Lynall 2019 B cells and stress
 
 ## bcellstress01.Rmd
 
@@ -22,35 +22,55 @@
 
 ## bcellstress06.Rmd
 
-- 
+- Extracts meningeal flow data from FlowJo workspaces and FCS files, QCs, then saves.
 
 ## bcellstress07.Rmd
 
-- 
+- Clusters meningeal flow cytomery data using flowSOM and ConsensusClusterPlus
+- Downsamples data to produce tSNE
+- Tests effects of strain and condition on median meningeal function marker expression (on automatically detected clusters) and plots this as tile plots
+- Makes:
+  - Figure S3B
+  - Figure S11B - ridges and heatmap for automated clusters
+  - Figure 3A - automated clustering
+  - Figure S3A
+  - Figure 3F
+  - Figure 5E
 
-## bcellstress08.Rmd
+## bcellstress08a.Rmd
 
-- 
+- Pre-processing of myeloid splenic flow cytometry data
+
+## bcellstress08b.Rmd
+
+- Pre-processing of lymphoid splenic flow cytometry data
 
 ## bcellstress09.Rmd
 
-- 
+- Test effects of strain and condition on splenic median function marker expression and plots this as tile plots
 
 ## bcellstress10.Rmd
 
-- 
+- Debatch variables for the effect of cohort (for purposes of visualization and correlation plots) 
+  - Box-Cox transform variables to make distribution more normal as necessary (not necessary for the rlog-transformed counts)
+  - Debatch using limma
+  - Inverse the Box-Cox transform. 
 
 ## bcellstress11.Rmd
 
-- 
+- Statistics and plots for cytokine data
 
 ## bcellstress12.Rmd
 
-- 
+- Meningeal microarray data: stressed vs. homecage
+- Makes figures 3G, S4A, 3D and 4A, S3C
 
 ## bcellstress13.Rmd
 
-- 
+- Makes:
+  - Figure S2E: Correlations between splenic cell counts and behaviour in stressed group
+  - Figure 3H: Correlation between behaviour and cell counts
+  - Figure S7E and S7G: comparison of effects of stress in CD19 and WT mice
 
 ## bcellstress14.Rmd
 
