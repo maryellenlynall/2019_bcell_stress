@@ -74,24 +74,37 @@
 
 ## bcellstress14.Rmd
 
-- 
-
+- Statistical testing for effects of stress and strain on splenic and meningeal percentage marker expression
+- Barplots for count data
+- Makes figures:
+  - Fig 2C (stress: effect on splenic B cells)
+  - Fig 5A (CD19 deficiency: effect on B cells)
+  - Fig 2E (Splenic B cell MHCII+, CD25+ and Cd69+ plots: effect of stress)
+  - Fig 3E (Meningeal B cell CD69 and MHCII: effects of stress)
+  - Fig S2D (splenic percs: condition effect)
+  - Fig S2C (splenic counts: condition effect)
+  - Fig S3D (splenic percs: stress effect)
+  - Fig S7B (splenic percs: strain effect)
+  - Fig S7C (meningeal percs: strain effect)
+  
 ## bcellstress15.Rmd
 
-- 
+- WT vs. CD19 stressed mice: RNAseq data: alignment to transcriptome using Salmon
 
 ## bcellstress16.Rmd
 
-- 
+- WT vs. CD19 stressed mice: RNAseq data: summarise transcript data to gene level
 
 ## bcellstress17.Rmd
 
-- 
+- WT vs. CD19 stressed mice: RNAseq data: Generate counts table, do differential expression analysis, VST
 
 ## bcellstress18.Rmd
 
-- 
+- WT vs. CD19 stressed mice: RNAseq data: GSEA
+- Makes Figure 5G and Figure S8
 
 ## bcellstress19.Rmd
 
-- 
+- CD19-/- vs. WT behaviour
+- Makes Figure 5F and S7H
