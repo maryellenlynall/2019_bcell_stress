@@ -57,6 +57,7 @@
 ## bcellstress09.Rmd
 
 - Test effects of strain and condition on splenic median function marker expression and plots this as tile plots
+- Makes Figure 2F and 5C
 
 ## bcellstress10.Rmd
 
@@ -68,33 +69,40 @@
 ## bcellstress11.Rmd
 
 - Statistics and plots for cytokine data
+- Makes Figure S3B and S9A
 
 ## bcellstress12.Rmd
 
 - Meningeal microarray data: stressed vs. homecage
-- Makes figures 3G, S4A, 3D and 4A, S3C
+- Makes:
+  - Figure 3G (GSEA - top 10 results)
+  - Figure S5A (full GSEA results) 
+  - Figure 3D (subset of deconvolution results)
+  - Figure S4C (full deconvolution results)
+  - Figure 4A (cytokine heatmap)
 
 ## bcellstress13.Rmd
 
 - Makes:
-  - Figure S2E: Correlations between splenic cell counts and behaviour in stressed group
+  - Figure S5: correlation plot of meningeal vs. splenic cell counts
+  - Figure S3E: Correlations between splenic cell counts and behaviour in stressed group
   - Figure 3H: Correlation between behaviour and cell counts
-  - Figure S7E and S7G: comparison of effects of stress in CD19 and WT mice
+  - Figure S9E and S9G: comparison of effects of stress in CD19 and WT mice
 
 ## bcellstress14.Rmd
 
 - Statistical testing for effects of stress and strain on splenic and meningeal percentage marker expression
 - Barplots for count data
 - Makes figures:
-  - Fig 2C (stress: effect on splenic B cells)
-  - Fig 5A (CD19 deficiency: effect on B cells)
-  - Fig 2E (Splenic B cell MHCII+, CD25+ and Cd69+ plots: effect of stress)
-  - Fig 3E (Meningeal B cell CD69 and MHCII: effects of stress)
-  - Fig S2D (splenic percs: condition effect)
-  - Fig S2C (splenic counts: condition effect)
-  - Fig S3D (splenic percs: stress effect)
-  - Fig S7B (splenic percs: strain effect)
-  - Fig S7C (meningeal percs: strain effect)
+  - Figure 2C (stress: effect on splenic B cells)
+  - Figure 5A and Figure 5B inset (CD19 deficiency: effect on B cells and neutrophils) 
+  - Figure 2E (Splenic B cell MHCII+, CD25+ and Cd69+ plots: effect of stress)
+  - Figure 3E (Meningeal B cell CD69 and MHCII: effects of stress)
+  - Figure S3D (splenic percentage marker positivity: stress effect)
+  - Figure S3C (splenic counts: stress effect)
+  - Figure S4D (meningeal percentage marker positivity: stress effect)
+  - Figure S9B (splenic percentage marker positivity: strain effect)
+  - Figure S9C (meningeal percentage marker positivity: strain effect)
   
 ## bcellstress15.Rmd
 
@@ -111,12 +119,15 @@
 ## bcellstress18.Rmd
 
 - WT vs. CD19 stressed mice: RNAseq data: GSEA
-- Makes Figure 5G and Figure S8
+- Makes:
+  - Figure 5H (top GSEA results)
+  - Figure S10A (full GSEA results)
+  - Figure S10B (leading edge - comparison of SD vs. HC and CD19 vs. WT for interferon pathways)
 
 ## bcellstress19.Rmd
 
 - CD19-/- vs. WT behaviour
-- Makes Figure 5F and S7H
+- Makes Figure 5F and S9H
 
 # Single cell analysis
 
