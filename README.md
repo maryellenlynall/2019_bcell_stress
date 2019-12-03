@@ -2,27 +2,36 @@
 
 ## bcellstress01.Rmd
 
-- 
+- Mindful student analysis - makes Figure 1A, 1B, 1C 
 
 ## bcellstress02.Rmd
 
-- 
+- Process murine cytokine data
 
 ## bcellstress03.Rmd
 
-- 
+- Process splenic count data.
+- Makes:
+  - Figure 2B (effects of stress on cell counts)
+  - Figure 5B (effects of CD19 deficiency on cell counts)
+  - Figure S9D (effects of stress on cell counts in CD19 deficient animals)
 
 ## bcellstress04.Rmd
 
-- 
+- Effects of stress on B cell IL10 (ex vivo stimulation)
+- Makes Figure 2D
 
 ## bcellstress05.Rmd
 
-- 
+- Process meningeal count data:
+- Makes:
+  - Figure 3B, 3C
+  - Figure 5D
+  - Figure S9F
 
 ## bcellstress06.Rmd
 
-- Extracts meningeal flow data from FlowJo workspaces and FCS files, QCs, then saves.
+- Extracts meningeal flow data from FlowJo workspaces and FCS files, QCs for automated clustering analysis, then saves.
 
 ## bcellstress07.Rmd
 
@@ -30,12 +39,12 @@
 - Downsamples data to produce tSNE
 - Tests effects of strain and condition on median meningeal function marker expression (on automatically detected clusters) and plots this as tile plots
 - Makes:
-  - Figure S3B
-  - Figure S11B - ridges and heatmap for automated clusters
-  - Figure 3A - automated clustering
-  - Figure S3A
-  - Figure 3F
-  - Figure 5E
+  - Figure 3A - automated clustering tSNE
+  - Figure S4A - manual and automated subset comparison
+  - Figure S13B - heatmap of marker expression for automated cluster detection
+  - Figure S4B - automated counts volcano SD vs. HC
+  - Figure 3F - effects of stress on flow marker expression
+  - Figure 5E -  effects of Cd19-/- on flow marker expression
 
 ## bcellstress08a.Rmd
 
@@ -108,3 +117,33 @@
 
 - CD19-/- vs. WT behaviour
 - Makes Figure 5F and S7H
+
+# Single cell analysis
+
+## bcellstress20.Rmd
+- Single cell - read data and call cells
+
+## bcellstress21.Rmd
+- Single cell - doublet calling, normalization, identification of highly variable genes, mutual nearest neighbour batch correction
+
+## bcellstress22.Rmd
+- Single cell - cell cycle estimation
+
+## bcellstress23.Rmd
+- Single cell - Leiden clustering and marker identification
+
+## bcellstress24.Rmd
+- Makes Figure S7B (clustering UMAP)
+- Single cell - cluster annotation
+
+## bcellstress25.Rmd
+- Makes Figure 4B (B cell cluster UMAP)
+- Makes Figure S8E (Adam 2017 stress genes)
+- Single cell - differential expression analysis
+
+## bcellstress26.Rmd
+- Further analysis and visualization of differential expression results
+- Makes:
+  - Figures 4C, 4D, 4E
+  - Figures S8A, S8B, S8C, S8D
+
