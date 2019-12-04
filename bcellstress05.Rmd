@@ -1,0 +1,412 @@
+---
+title: "Figure 3"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+Meningeal differential count analysis. Makes:
+  - Figure 3B
+  - Figure 3C
+  - Figure 5D
+  - Figure S9F
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(reshape2)
+library(readxl)
+library(corrplot)
+library(cowplot)
+library(DESeq2) 
+library(lmtest)
+library(here)
+
+# get rid of scientific notation
+options(scipen=999)
+
+load(here("res/data_bred.R")) # Load the data frame containing counts for each mouse
+```
+
+```{r}
+# Select meningeal counts
+tmp <- colnames(data_bred)[grep("men_",colnames(data_bred))]
+
+# Define cell types
+countdata <- c("men_MHCII+","men_MHCII-","men_helper","men_cytotoxic","men_microglia","men_neut","men_nk","men_nkt","men_b_both","men_plasmacytoid","men_cd11b+","men_cd11b-","men_ly6c.mono")
+
+# Label cell types
+counts_good_names_men <- c("CD64^{'+'}*MHCII^{'+'}~macrophages","CD64^{'+'}*MHCII^{'-'}~macrophages","T[helper]","T[cytotoxic]","microglia","neutrophils","NK","NKT","B~cells","pDCs","CD11b^{'+'}~DCs","CD11b^{'-'}~DCs","Ly6C^{hi}~monocytes") 
+
+# Mean counts in WT mice
+tmp <- data.frame(t(rbind(counts_good_names_men,signif(colMeans(data_bred[data_bred$strain=="wt" & data_bred$cond=="hc",countdata], na.rm=TRUE),2))))
+rownames(tmp) <- tmp$counts_good_names_men
+print(tmp)
+
+```
+
+Pie chart (Figure 3B inset)
+```{r}
+
+blank_theme <- theme_minimal() +
+  theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.border = element_blank(),
+  panel.grid = element_blank(),
+  axis.ticks = element_blank(),
+  plot.title = element_text(size=14, face="bold")
+  )
+
+# Colors
+colors_ord = c( 
+  "#DC050C", 
+  "#E6AB02", 
+  "#882E72", 
+  "#B17BA6", 
+  "#55A1B1",
+  "#8DD3C7", 
+  "#33A02C", 
+  "#8600bf",
+  "#aeae5c", 
+  "#FF7F00", 
+  "#d4b7b7", 
+  "#1965B0",
+  "#ffff00", 
+  "grey79" 
+)
+
+# Uncategorised cells
+data_bred$unknown_men <- data_bred$men_leuco_plus_micro - rowSums(data_bred[,countdata])
+
+# Order cells by median count
+wt_counts_ordered <- sort(apply(data_bred[data_bred$strain=="wt" & data_bred$cond=="hc",countdata],2,median), decreasing=TRUE) 
+
+names_ordered <- counts_good_names_men[order(apply(data_bred[data_bred$strain=="wt" & data_bred$cond=="hc",countdata],2,median), decreasing=TRUE)]
+
+df <- data.frame(
+  Cell = c(names_ordered, "Unknown"),
+  value = c(wt_counts_ordered, median(data_bred[data_bred$strain=="wt" & data_bred$cond=="hc","unknown_men"], na.rm=TRUE))
+)
+
+df$Cell <- factor(df$Cell, levels=df$Cell, ordered=TRUE)
+
+p <- ggplot(df, aes(x = "", y = value, fill = Cell)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start = pi / 3) +
+  scale_fill_manual(values = colors_ord, labels=parse(text=levels(df$Cell))) +
+  blank_theme +
+  theme(axis.text=element_blank(), legend.text=element_text(size=14), legend.text.align = 0, legend.title=element_blank()) 
+p
+ggsave(p, filename="apollo_meninges_counts_wt_pie.pdf", path=here("pics/"), width=6, height=5)
+```
+
+Percentage plot (Figure 3B)
+```{r}
+# Column names for percentages are same as for absolute counts but start with "pen" rather than "men"
+percdata <- countdata
+substring(percdata,1,1) <- "p"
+
+percing <- data_bred[data_bred$strain %in% "wt" & data_bred$cond %in% "hc",c("name",percdata)]
+percing$unknown_pen <- 1 - rowSums(percing[,percdata])
+colnames(percing) <- c("name",counts_good_names_men,"Unknown")
+percing_melt <- melt(percing)
+
+percing_melt$variable <- factor(percing_melt$variable, levels=levels(df$Cell))
+
+p <- ggplot(percing_melt, aes(x=variable, y=100*value, fill=variable)) + geom_boxplot(outlier.alpha=0) + geom_jitter(width=0.2, height=0, size=1, shape=16) + ylab("% of meningeal \nimmune cells") + xlab("") + guides(fill=FALSE) + theme_classic() + scale_x_discrete(limits=rev(levels(df$Cell)),labels=parse(text=rev(levels(df$Cell)))) + theme(panel.grid = element_blank()) + scale_fill_manual(values=colors_ord) + coord_flip()
+p
+ggsave(filename="apollo_percentages_hc_wt_meninges.pdf",p,path=here("pics/"),width=6,height=4)
+# 13 mice
+
+```
+
+In the above, `r nrow(percing)` HC, non-stressed mice went into making up the plots.
+
+## DEseq
+```{r}
+count_men <- data_bred[,countdata]
+subs <- rownames(na.omit(count_men))
+counts <- t(na.omit(as.matrix(count_men)))
+colnames(counts) <- data_bred[subs,"name"]
+condition <- relevel(factor(data_bred[subs,"cond"], ordered=FALSE), ref="hc") # DEseq needs ordering removed
+strain <- relevel(factor(data_bred[subs,"strain"], ordered=FALSE), ref="wt")
+cohort <- factor(data_bred[subs,"coh"],ordered=FALSE)
+
+# Create a data frame of the design matrix as required by DESeqDataSetFromMatrix
+coldata <- data.frame(row.names=colnames(counts), condition, strain, cohort) 
+
+dds <- DESeqDataSetFromMatrix(countData=counts, colData=coldata, design= ~ cohort + strain + condition + strain:condition) 
+dds
+
+# DESeq including estimation of size factors
+dds_libcorr <- DESeq(dds)
+
+```
+
+
+## DESeq without library size correction (sensitivity analysis)
+```{r}
+dds_nocorr <- dds
+sizeFactors(dds_nocorr) <- sizeFactors(dds_libcorr)
+sizeFactors(dds_nocorr) <- 1 # Make all size factors = 1
+dds_nocorr <- estimateDispersions(dds_nocorr)
+dds_nocorr <- nbinomWaldTest(dds_nocorr)
+
+```
+
+
+Might the library size correction introduce bias? If there is a significant effect of condition or strain on the calculated size factors (i.e. library size correction), this would suggest yes, but there is not:
+```{r}
+SF <- sizeFactors(dds_libcorr)
+hist(SF)
+data_bred$men_size_facs <- NULL
+data_bred <- merge(data_bred, data.frame(name=names(SF),men_size_facs=SF), by="name")
+ggplot(aes(y=men_size_facs, x=men_leucocytes, color=strain, shape=cond), data=data_bred) + geom_point() + scale_color_manual(values=c("red", "black"))
+
+# Linear model of size factors against experimental design
+rs <- lm(data_bred$men_size_facs ~ strain + cond + coh, data=data_bred, na.action=na.omit)
+summary(rs) # See effects of cohort as expected, but no effects of strain or condition on size factors
+
+# Coefficients:
+#              Estimate Std. Error t value   Pr(>|t|)    
+# (Intercept)  0.544863   0.132433   4.114   0.000168 ***
+# straincd19   0.166743   0.096551   1.727   0.091183 .  
+# cond.L      -0.009125   0.069272  -0.132   0.895807    
+# cohr4        0.690711   0.174402   3.960   0.000270 ***
+# cohr5        0.833322   0.174402   4.778 0.00001999 ***
+# cohr6        0.999690   0.176598   5.661 0.00000106 ***
+# cohr7        0.806056   0.174402   4.622 0.00003325 ***
+# cohr8        0.510212   0.174402   2.925   0.005421 ** 
+# cohr9       -0.378343   0.199344  -1.898   0.064277 . 
+
+```
+
+## Save rlog counts
+```{r}
+dds <- dds_libcorr
+
+rld <- rlogTransformation(dds, blind=TRUE) 
+men_rld_libcorr <- assay(rld) 
+
+save(men_rld_libcorr, file=here("res/men_rld_libcorr.R"))
+save(counts_good_names_men, file=here("res/counts_good_names_men.R"))
+```
+
+### Effects of stress in WT mice
+```{r}
+library(ggrepel)
+fdr <- 0.05
+res <- results(dds,name="condition_csd_vs_hc")
+resdata <- merge(as.data.frame(res), as.data.frame(counts(dds, normalized=TRUE)), by="row.names", sort=FALSE) 
+names(resdata)[1] <- "Subset"
+head(resdata[order(resdata$padj),c("Subset","pvalue","padj")]) # Look at min p values (to decide y-axis limits)
+head(resdata[order(abs(resdata$log2FoldChange), decreasing=TRUE),c("Subset","log2FoldChange")]) # Look at max fold change (to decide x-axis limits)
+
+res2 = mutate(resdata, sig=ifelse(resdata$padj<fdr, paste("FDR<",fdr,sep=""), "Not Sig"))
+rownames(res2) <- counts_good_names_men
+
+p = ggplot(res2, aes(res2$log2FoldChange, -log10(res2$pvalue))) +
+  geom_point(aes(col=sig, size=sig)) +
+  scale_color_manual(values=c("red", "black")) +
+  scale_size_manual(values=c(3,2)) +
+  xlab("log2(Fold Change)") +
+  ylab("-log10 (p-value)") +
+  theme_bw() +
+  theme(legend.justification=c(0,0), legend.position=c(0,0), legend.background = element_rect(color="grey", fill="white",size=.5, linetype="solid"), legend.text=element_text(size=20), axis.text = element_text(size=20), axis.title = element_text(size=20)) + 
+  xlim(-1.5,1.5) +
+  labs(col=NULL) +
+  guides(size=FALSE, col=guide_legend(keywidth=0.05,keyheight=1.5)) +
+  geom_vline(xintercept=0, linetype="dashed")
+p
+
+p2 = p + geom_text_repel(data=dplyr::filter(res2, res2$padj<fdr), aes(dplyr::filter(res2, res2$padj<fdr)[,"log2FoldChange"], -log10(dplyr::filter(res2, res2$padj<fdr)[,"pvalue"]),label=rownames(res2[res2$padj<fdr,])),min.segment.length = unit(0, "lines"), size=7,segment.colour = "black", parse=TRUE, box.padding=unit(0.4,"lines")) 
+p2
+ggsave(p2,path=here("pics/"), filename="apollo_volcano_counts_stress_hc_libcorr.pdf",width=6,height=6)
+
+# Version with more labels
+fdrT <- 0.5
+p3 = p + geom_text_repel(data=dplyr::filter(res2, res2$padj<fdrT), aes(dplyr::filter(res2, res2$padj<fdrT)[,"log2FoldChange"], -log10(dplyr::filter(res2, res2$padj<fdrT)[,"pvalue"]),label=rownames(res2[res2$padj<fdrT,])),min.segment.length = unit(0, "lines"), size=7,segment.colour = "black", parse=TRUE, box.padding=unit(0.4,"lines")) 
+p3
+ggsave(p3,path=here("pics/"), filename="apollo_volcano_counts_stress_hc_libcorr_moretext.pdf",width=6,height=6)
+res2_men_stress_hc_libcorr <- res2
+
+```
+
+### Effect of strain 
+Figure 5D
+```{r}
+res <- results(dds,name="strain_cd19_vs_wt")
+resdata <- merge(as.data.frame(res), as.data.frame(counts(dds, normalized=TRUE)), by="row.names", sort=FALSE)
+names(resdata)[1] <- "Subset"
+head(resdata)
+
+# Had to alter the x limits manually
+res2 = mutate(resdata, sig=ifelse(resdata$padj<fdr, paste("FDR<",fdr,sep=""), "Not Sig"))
+rownames(res2) <- counts_good_names_men
+
+p = ggplot(res2, aes(res2$log2FoldChange, -log10(res2$pvalue))) +
+  geom_point(aes(col=sig, size=sig)) +
+  scale_color_manual(values=c("red", "black")) +
+  scale_size_manual(values=c(3,2)) +
+  xlab("log2(Fold Change)") +
+  ylab("-log10 (p-value)") +
+  theme_bw() +
+  theme(legend.justification=c(0,0), legend.position=c(0,0), legend.background = element_rect(color="grey", fill="white",size=.5, linetype="solid"), legend.text=element_text(size=20), axis.text = element_text(size=20), axis.title = element_text(size=20)) + 
+  xlim(-1.5,1.5) +
+  #ylim(0,3.5) +
+  labs(col=NULL) +
+  guides(size=FALSE, col=guide_legend(keywidth=0.05,keyheight=1.5)) +
+  geom_vline(xintercept=0, linetype="dashed")
+p
+
+p = p + geom_text_repel(data=dplyr::filter(res2, res2$padj<fdr), aes(dplyr::filter(res2, res2$padj<fdr)[,"log2FoldChange"], -log10(dplyr::filter(res2, res2$padj<fdr)[,"pvalue"]),label=rownames(res2[res2$padj<fdr,])),min.segment.length = unit(0, "lines"), size=7,segment.colour = "black", parse=TRUE, box.padding=unit(0.4,"lines")) 
+p
+ggsave(p,path=here("pics/"), filename="apollo_volcano_counts_cd19_wt_libcorr.pdf",width=6,height=6)
+res2_men_strain_wt_libcorr <- res2
+
+```
+
+### EFFECT OF STRESS IN CD19 MICE:
+Figure S9F
+```{r}
+res <- results(dds,list(c("condition_csd_vs_hc","straincd19.conditioncsd")))
+resdata <- merge(as.data.frame(res), as.data.frame(counts(dds, normalized=FALSE)), by="row.names", sort=FALSE)
+names(resdata)[1] <- "Subset"
+head(resdata)
+
+# Had to alter the x limits manually
+
+res2 = mutate(resdata, sig=ifelse(resdata$padj<fdr, paste("FDR<",fdr,sep=""), "Not Sig"))
+rownames(res2) <- counts_good_names_men
+
+p = ggplot(res2, aes(res2$log2FoldChange, -log10(res2$pvalue))) +
+  geom_point(aes(col=sig, size=sig)) +
+  scale_color_manual(values=c("red", "black")) +
+  scale_size_manual(values=c(3,2)) +
+  xlab("log2(Fold Change)") +
+  ylab("-log10 (p-value)") +
+  theme_bw() +
+  theme(legend.justification=c(0,0), legend.position=c(0,0), legend.background = element_rect(color="grey", fill="white",size=.5, linetype="solid"), legend.text=element_text(size=20), axis.text = element_text(size=20), axis.title = element_text(size=20)) + 
+  xlim(-1.5,1.5) +
+  #ylim(0,3.5) +
+  labs(col=NULL) +
+  guides(size=FALSE, col=guide_legend(keywidth=0.05,keyheight=1.5)) +
+  geom_vline(xintercept=0, linetype="dashed")
+p
+
+# Add labels
+p = p + geom_text_repel(data=dplyr::filter(res2, res2$padj<fdr), aes(dplyr::filter(res2, res2$padj<fdr)[,"log2FoldChange"], -log10(dplyr::filter(res2, res2$padj<fdr)[,"pvalue"]),label=rownames(res2[res2$padj<fdr,])),min.segment.length = unit(0, "lines"), size=7,segment.colour = "black", parse=TRUE, box.padding=unit(0.4,"lines")) 
+p
+ggsave(p,path=here("pics/"), filename="apollo_volcano_counts_stress_in_cd19_libcorr.pdf",width=6,height=6)
+
+res2_men_stress_cd19_libcorr <- res2
+save(file=here("/res/res2_men.R"), res2_men_stress_hc_libcorr, res2_men_strain_wt_libcorr, res2_men_stress_cd19_libcorr)
+
+```
+
+Double-check names
+```{r}
+print(rbind(rownames(res2),res2$Subset))
+print(summary(rs))
+```
+
+## DESeq without library size correction (sensitivity analysis)
+```{r}
+dds <- dds_nocorr 
+resultsNames(dds)
+```
+
+### Effects of stress
+```{r}
+res <- results(dds,name="condition_csd_vs_hc")
+resdata <- merge(as.data.frame(res), as.data.frame(counts(dds, normalized=FALSE)), by="row.names", sort=FALSE) # Normalized = TRUE or FALSE doesn't make a difference here because Log fold change already calculated by this stage anyway.
+names(resdata)[1] <- "Subset"
+head(resdata[order(resdata$padj),])
+
+res2 = mutate(resdata, sig=ifelse(resdata$padj<0.05, "FDR<0.05", "Not Sig"))
+rownames(res2) <- counts_good_names_men
+library(ggrepel)
+p = ggplot(res2, aes(res2$log2FoldChange, -log10(res2$pvalue))) +
+  geom_point(aes(col=sig, size=sig)) +
+  scale_color_manual(values=c("red", "black")) +
+  scale_size_manual(values=c(3,2)) +
+  geom_text_repel(data=dplyr::filter(res2, res2$padj<0.05), aes(dplyr::filter(res2, res2$padj<0.05)[,"log2FoldChange"], -log10(dplyr::filter(res2, res2$padj<0.05)[,"pvalue"]),label=rownames(res2[res2$padj<0.05,])),min.segment.length = unit(0, "lines"), size=7,segment.colour = "black", parse=TRUE, box.padding=unit(0.4,"lines")) +
+  xlab("log2(Fold Change)") +
+  ylab("-log10 (p-value)") +
+  theme(panel.background = element_rect(colour="white"), legend.justification=c(0,0), legend.position=c(0,0), legend.background = element_rect(color="black", fill="white",size=.5, linetype="solid"), legend.text=element_text(size=20), axis.text = element_text(size=20), axis.title = element_text(size=20)) +
+  xlim(-1.5,1.5) +
+  #ylim(0,3.5) +
+  labs(col=NULL) +
+  guides(size=FALSE, col=guide_legend(keywidth=0.05,keyheight=1.5)) +
+  geom_vline(xintercept=0, linetype="dashed")
+p
+ggsave(p,path=here("pics/"), filename="apollo_volcano_counts_stress_hc_nocorr.pdf",width=6,height=6)
+
+```
+
+
+### Effect of strain (raw, unnormalized counts)
+```{r}
+res <- results(dds,name="strain_cd19_vs_wt")
+resdata <- merge(as.data.frame(res), as.data.frame(counts(dds, normalized=FALSE)), by="row.names", sort=FALSE)
+names(resdata)[1] <- "Subset"
+head(resdata)
+
+res2 = mutate(resdata, sig=ifelse(resdata$padj<0.05, "FDR<0.05", "Not Sig"))
+rownames(res2) <- counts_good_names_men
+
+p = ggplot(res2, aes(res2$log2FoldChange, -log10(res2$pvalue))) +
+  geom_point(aes(col=sig, size=sig)) +
+  scale_color_manual(values=c("red", "black")) +
+  scale_size_manual(values=c(3,2)) +
+  geom_text_repel(data=dplyr::filter(res2, res2$padj<0.05), aes(dplyr::filter(res2, res2$padj<0.05)[,"log2FoldChange"], -log10(dplyr::filter(res2, res2$padj<0.05)[,"pvalue"]),label=rownames(res2[res2$padj<0.05,])),min.segment.length = unit(0, "lines"), size=7,segment.colour = "black", parse=TRUE, box.padding=unit(0.4,"lines")) +
+  xlab("log2(Fold Change)") +
+  ylab("-log10 (p-value)") +
+  theme(panel.background = element_rect(colour="white"),legend.justification=c(0,0), legend.position=c(0,0), legend.background = element_rect(color="black", fill="white",size=.5, linetype="solid"), legend.text=element_text(size=20), axis.text = element_text(size=20), axis.title = element_text(size=20)) + 
+  xlim(-1.5,1.5) +
+  #ylim(0,3.5) +
+  labs(col=NULL) +
+  guides(size=FALSE, col=guide_legend(keywidth=0.05,keyheight=1.5)) +
+  geom_vline(xintercept=0, linetype="dashed")
+p
+ggsave(p,path=here("pics/"), filename="apollo_volcano_counts_cd19_wt_nocorr.pdf",width=6,height=6)
+
+```
+
+### EFFECT OF STRESS IN CD19 MICE:
+```{r}
+res <- results(dds,list(c("condition_csd_vs_hc","straincd19.conditioncsd")))
+resdata <- merge(as.data.frame(res), as.data.frame(counts(dds, normalized=FALSE)), by="row.names", sort=FALSE)
+names(resdata)[1] <- "Subset"
+head(resdata)
+
+res2 = mutate(resdata, sig=ifelse(resdata$padj<0.05, "FDR<0.05", "Not Sig"))
+rownames(res2) <- counts_good_names_men
+
+p = ggplot(res2, aes(res2$log2FoldChange, -log10(res2$pvalue))) +
+  geom_point(aes(col=sig, size=sig)) +
+  scale_color_manual(values=c("red", "black")) +
+  scale_size_manual(values=c(3,2)) +
+  geom_text_repel(data=dplyr::filter(res2, res2$padj<0.05), aes(dplyr::filter(res2, res2$padj<0.05)[,"log2FoldChange"], -log10(dplyr::filter(res2, res2$padj<0.05)[,"pvalue"]),label=rownames(res2[res2$padj<0.05,])),min.segment.length = unit(0, "lines"), size=7,segment.colour = "black", parse=TRUE, box.padding=unit(0.4,"lines")) +
+  xlab("log2(Fold Change)") +
+  ylab("-log10 (p-value)") +
+  theme(panel.background = element_rect(colour="white"), legend.justification=c(0,0), legend.position=c(0,0), legend.background = element_rect(color="black", fill="white",size=.5, linetype="solid"), legend.text=element_text(size=20), axis.text = element_text(size=20), axis.title = element_text(size=20)) + 
+  xlim(-1.5,1.5) +
+  #ylim(0,3.5) +
+  labs(col=NULL) +
+  guides(size=FALSE, col=guide_legend(keywidth=0.05,keyheight=1.5)) +
+  geom_vline(xintercept=0, linetype="dashed")
+p
+ggsave(p,path=here("pics/"), filename="apollo_volcano_counts_stress_in_cd19_no_corr.pdf",width=6,height=6)
+
+```
+
+
+```{r}
+
+sessionInfo()
+
+```
+
+

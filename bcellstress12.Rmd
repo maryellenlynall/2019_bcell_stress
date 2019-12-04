@@ -1,0 +1,365 @@
+---
+title: "stressed menines microarray"
+output: html_document
+---
+
+Meningeal microarray data: stressed vs. homecage
+
+Makes:
+  - Figure 3G (GSEA - top 10 results)
+  - Figure S5A (full GSEA results) 
+  - Figure 3D (subset of deconvolution results)
+  - Figure S4C (full deconvolution results)
+  - Figure 4A (cytokine heatmap)
+
+```{r}
+
+library(ggplot2)
+library(tidyverse)
+library(magrittr)
+library(here)
+library(msigdbr)
+library(clusterProfiler)
+library(oligo)
+library(pd.mogene.2.0.st)
+
+basedir <- paste0(here::here(),'/data/raw/meninges_array/')
+celFiles <- list.celfiles(paste(basedir,"input_men",sep=""), full.names=TRUE)
+rawData <- read.celfiles(celFiles, pkgname="pd.mogene.2.0.st") 
+
+# Make phenodata
+sns <- sampleNames(rawData)
+mouse <- substr(sns,1,4)
+cond <- substr(sns,6,7)
+info <- data.frame(mouse=mouse,cond=cond)
+rownames(info) <- sns
+
+pd <- new('AnnotatedDataFrame', data=info)
+phenoData(rawData) <- pd
+rm(cond,mouse, info)
+
+# Now RMA: background subtraction, quantile normalization and summarization 
+rmaC0 <- rma(rawData, target='core') # Note that RMA outputs log2 scale values.
+rmaC0 
+
+library(mogene20sttranscriptcluster.db)
+
+annotateGene = function (set, db , what , missing ) {
+         tab = toTable(db[intersect(featureNames(set),
+mappedkeys(db)) ])
+         mt = match (featureNames(set) , tab$probe_id )
+         ifelse ( is.na(mt), missing , tab[[ what ]][ mt ])
+         }
+
+fData(rmaC0)$symbol=annotateGene(rmaC0, mogene20sttranscriptclusterSYMBOL,"symbol", missing = NA)
+fData(rmaC0)$genename=annotateGene(rmaC0, mogene20sttranscriptclusterGENENAME ,"gene_name", missing=NA)
+fData(rmaC0)$ensembl=annotateGene(rmaC0, mogene20sttranscriptclusterENSEMBL,"ensembl_id",missing = NA)
+
+fData(rawData)$symbol=annotateGene(rawData, mogene20sttranscriptclusterSYMBOL,"symbol", missing = NA)
+
+# Check for outliers:
+exp_raw <- log2(exprs(rawData))
+PCA_raw <- prcomp(t(exp_raw), scale = FALSE)
+annotation(rmaC0) <- "mogene20sttranscriptcluster.db"
+
+boxplot(rmaC0, col="red", transform="identity") # Check normalization
+
+stopifnot(validObject(rmaC0))
+
+```
+
+
+## Limma model
+
+```{r}
+SampleGroup <- pd$cond
+
+design <- model.matrix(~0+SampleGroup)
+colnames(design) <- c("HC","Stress")
+
+# Remove duplicates only
+library(genefilter)
+gse.expFilt <- nsFilter(rmaC0, var.filter=FALSE, require.entrez = FALSE, remove.dupEntrez = TRUE)
+gse.expFilt <- gse.expFilt$eset # Drop the logs
+
+# Variance filter
+gse.expFilt.varfilter <- nsFilter(rmaC0, var.filter=TRUE, require.entrez = FALSE, remove.dupEntrez = TRUE)
+gse.expFilt.varfilter <- gse.expFilt.varfilter$eset 
+
+# FIT with all genes
+library(limma)
+fit <- limma::lmFit(exprs(gse.expFilt), design)
+names(fit)
+contrasts <- makeContrasts(Stress - HC, levels=design)
+fit2 <- contrasts.fit(fit, contrasts)
+head(fit2$coeff)
+fit2 <- eBayes(fit2)
+fit2
+topTable(fit2, adjust="fdr", n=10)
+anno <- fData(gse.expFilt)
+fit2$genes <- anno
+topTable(fit2, number=20)[,c("symbol","logFC","adj.P.Val")] 
+
+# Now fit with varfilter
+fit <- limma::lmFit(exprs(gse.expFilt.varfilter), design)
+names(fit)
+contrasts <- makeContrasts(Stress - HC, levels=design)
+fit2.varfilter <- contrasts.fit(fit, contrasts)
+head(fit2.varfilter$coeff)
+fit2.varfilter <- eBayes(fit2.varfilter)
+fit2.varfilter
+anno <- fData(gse.expFilt.varfilter)
+fit2.varfilter$genes <- anno
+topTable(fit2.varfilter, number=20)[,c("symbol","logFC","adj.P.Val")] 
+
+tt <- topTable(fit2, number=44000)
+tt.varfilter <- topTable(fit2.varfilter, number=44000)
+
+```
+
+## Choose whether to filter for highly variable genes only
+Aiming to examine specific cytokines + GSEA + xcell deconvolution --> no filtering. 
+```{r}
+varfilter <- FALSE
+
+if (varfilter==TRUE){
+  gse.expFilt <- gse.expFilt.varfilter
+  tt <- tt.varfilter
+} else {
+  gse.expFilt <- gse.expFilt
+  tt <- tt 
+}
+
+# Set rownames and reorder
+duplicated(tt$symbol) %>% table # Check for duplicated symbols
+rownames(tt) <- tt$symbol
+
+gse.expFilt <- gse.expFilt[,order(pData(gse.expFilt)$cond)] # Reorder dataset to be in order of cond (reorders the pData too)
+rownames(gse.expFilt) <- as.character(fData(gse.expFilt)$symbol)
+
+colnames(gse.expFilt) <- pData(gse.expFilt)$mouse
+```
+
+# Saving data
+```{r}
+rmaC0_men <- rmaC0
+save(list=c("tt","rmaC0_men","gse.expFilt"), file=paste0(here::here(),"/res/rmaC0_men.R"))
+```
+
+### Hallmarks
+```{r}
+# Rank SS-induced genes by t-stat
+tmp <- tt[order(tt$t, decreasing = TRUE),c("symbol","t")]
+geneList <- tmp$t
+names(geneList) <- tmp$symbol
+
+mouse_t2g <- msigdbr(species = "Mus musculus", category = "H") %>% 
+  dplyr::select(gs_name, gene_symbol) 
+head(mouse_t2g)
+
+# Do preranked GSEA 
+gseaout <- clusterProfiler::GSEA(geneList, TERM2GENE = mouse_t2g, nPerm=10000, exponent=1) # Some ties are okay. Exponent=1 is weighted (recommended for microarray but not RNAseq)
+head(gseaout)
+
+# View
+gseaout@result %>% dplyr::select("Description","NES", "p.adjust") %>% arrange(NES) 
+
+# My graph
+df <- gseaout@result %>% arrange(NES)
+# Make labeller
+df$label <- gsub("HALLMARK_","",df$ID) %>% tolower %>% gsub("_"," ",.)
+labeller <- df$label
+names(labeller) <- df$ID
+# Ensure order is order in df NOT alphabetical
+df$ID %<>% factor(levels=unique(df$ID), ordered = T)
+# And plot
+p <- ggplot(df, aes(x = NES, y = ID, color=as.factor(sign(NES)))) + 
+        geom_point(size=4) + 
+        theme_bw(base_size = 14) +
+        scale_y_discrete(labels=labeller) +
+        scale_colour_manual(limits=c("-1","1"), values=c("dark blue","dark red"), labels=c("Decreased in stress","Increased in stress")) +
+        ylab(NULL) +
+        theme(legend.title = element_blank()) +
+        xlab("Normalized enrichment score") +
+        expand_limits(x=c(-2,4)) +
+        geom_vline(xintercept = 0) +
+        ggtitle("GSEA significantly enriched \nhallmark gene sets (p(adj)<0.05)")
+p
+# Figure S5A
+ggsave(p,path=here::here("pics/"),filename="apollo_gsea_out.meninges.microarray.pdf",width=6,height=9)
+
+### Now smaller version for main Figure 3G
+p <- ggplot(tail(df,10), aes(x = NES, y = ID, color=as.factor(sign(NES)))) +
+        geom_point(size=4) + 
+        theme_bw(base_size = 14) +
+        scale_y_discrete(labels=labeller) +
+        scale_colour_manual(limits=c("-1","1"), values=c("dark blue","dark red"), labels=c("Decreased in stress","Increased in stress")) +
+        ylab(NULL) +
+        theme(legend.title = element_blank()) +
+        xlab("Normalized enrichment score") +
+        expand_limits(x=c(0,3.5)) +
+        guides(color=FALSE) +
+        ggtitle("GSEA significantly enriched \nhallmark gene sets (p(adj)<0.05)")
+p
+ggsave(p,path=here::here("pics/"),filename="apollo_gsea_out.meninges.microarray_small.pdf",width=3,height=3.5)
+```
+
+Escarpment
+```{r}
+library(ggfittext)
+
+lynall_escarpment_many <- function(gseaout, pathway, version, ymin=-0.3, ymax=-0.1, xmax=NULL){ 
+  if(!isS4(gseaout)){ # Sometimes I have already converted output to a dataframe
+    stop("Must be an S4 object")
+  }
+  leading <- gsub("/", " ", gseaout@result[gseaout@result$Description==pathway,"core_enrichment"])
+  print(leading)
+  if(is.null(xmax)){
+    xmax = max(gseaout@result$rank)
+  } else {
+    xmax = xmax
+  }
+  p <- gseaplot(gseaout, pathway, title=pathway, by="runningScore") + expand_limits(y=c(ymin, 0.1)) + geom_fit_text(data=data.frame(x=1,y=1), aes(ymin = ymin, ymax = ymax, xmin = 0, xmax = xmax, label = paste0("Leading edge:\n",leading)), reflow=TRUE)
+  print(p)
+  return(p)
+}
+
+pathway <- "HALLMARK_INTERFERON_GAMMA_RESPONSE"
+p <- lynall_escarpment_many(gseaout, pathway, version="SDvsHC", ymin=-0.4, xmax=23000)
+ggsave(p, path=here::here("pics/"), filename = paste0("escarpment_",pathway,"_","SDvsHC",".pdf"))
+
+# And save the list of leading edge genes
+write.table(strsplit(gseaout@result[gseaout@result$Description==pathway,"core_enrichment"],"/"), file=paste0(here::here("res/"),"leadingedge_",pathway,"_SDvsHC.csv"), col.names = F, row.names = F)
+
+
+pathway <- "HALLMARK_INTERFERON_ALPHA_RESPONSE"
+p <- lynall_escarpment_many(gseaout, pathway, version="SDvsHC", ymin = -0.4, xmax=23000)
+ggsave(p, path=here::here("pics/"), filename = paste0("escarpment_",pathway,"_","SDvsHC",".pdf"))
+
+# And save the list
+write.table(strsplit(gseaout@result[gseaout@result$Description==pathway,"core_enrichment"],"/"), file=paste0(here::here("res/"),"leadingedge_",pathway,"_SDvsHC.csv"), col.names = F, row.names = F)
+```
+
+## Univariate DE genes
+### Cytokines. FIGURE 4A
+```{r}
+load(paste0(here::here("res/"),"genelist_mouse_cyto_chemo_and_binding.R"))
+sprintf("We have loaded a genelist of %d cytokines/chemokines and %d cytokine/chemokine binders", nrow(genelist_mouse_cyto_chemo_and_binding$cyto_chemo), length(genelist_mouse_cyto_chemo_and_binding$cyto_chemo_binding))
+
+# Which ortholog cytokines are actually in the data?
+cytokine_list <- rownames(tt)[rownames(tt) %in% genelist_mouse_cyto_chemo_and_binding$cyto_chemo$mouse] 
+sprintf("Only %d cytokines appear in the filtered dataset", length(cytokine_list))
+
+cytokine_binders_list <- rownames(tt)[rownames(tt) %in% genelist_mouse_cyto_chemo_and_binding$cyto_chemo_binding] 
+
+sprintf("Only %d cytokine/chemokine binders appear in the filtered dataset", length(cytokine_binders_list))
+
+# Get cytokines in order of significance and logFC, 
+tmp <- tt
+tmp <- tmp[order(sign(tmp$logFC)*(1/tmp$P.Value), decreasing = F),] 
+pheatlist <- rownames(tmp)[which(rownames(tmp) %in% cytokine_list)] 
+tt[pheatlist,c("symbol","logFC","P.Value","adj.P.Val")] 
+
+# Now only show those with raw p<0.05 which are also a cytokine 
+rawp <- tt[which(tt$P.Value<0.05),]
+
+library(pheatmap)
+pheatmap(exprs(gse.expFilt)[pheatlist[pheatlist %in% rownames(rawp)],], 
+         color = c(rep("black", 25), viridis::inferno(75)),
+         cluster_rows=F, show_rownames=T,
+         show_colnames=F,
+         cluster_cols=FALSE, annotation_col=pData(gse.expFilt)[,"cond",drop=F],
+         scale="row",
+         labels_col = as.character(pData(gse.expFilt)[,"mouse"]), # Falls off margins if don't make it character
+         filename=paste0(here::here("pics/"),"apollo_stress_meninges_pheat_cytokines.pdf"), width=3.8, height=2.3, main="Meningeal cytokines\nunadjusted p<0.05)",
+         annotation_colors = list(cond = c(HC="light grey", SD="red"))
+         )
+
+```
+
+# DECONVOLUTION
+## xCell
+```{r}
+# Install from here:
+# devtools::install_github('dviraran/xCell')
+library(xCell)
+library(biomaRt)
+# Need genes in rows and samples in columns
+# " The rownames should be gene symbols. If the data contains non-unique gene symbols, rows with same gene symbols will be averaged."
+# "xCell uses the expression levels ranking and not the actual values, thus normalization does not have an effect, however normalizing to gene length is required."
+# rnaseq parameter: "if true than use RNAseq spillover and calibration paramters, else use array parameters."
+forxcell <- exprs(gse.expFilt)
+# convert mouse to human gene symbols
+mouse <- useMart("ensembl", dataset="mmusculus_gene_ensembl")
+human <- useMart("ensembl", dataset = "hsapiens_gene_ensembl") 
+orthologs <- getLDS(attributes="external_gene_name", filters = "external_gene_name", values=rownames(forxcell), mart=mouse, attributesL="hgnc_symbol", martL=human, verbose = FALSE, uniqueRows = FALSE, bmHeader=TRUE) 
+colnames(orthologs) <- c("mouse","human") 
+
+orthologs[which(!orthologs$mouse %in% rownames(forxcell)),] 
+orthologs[orthologs$mouse=="ETV3L","mouse"] <- "Etv3l" # Adjust incorrect capitalization
+
+forxcell <- forxcell[orthologs$mouse,] 
+rownames(forxcell) <- orthologs$human
+
+# Drop any cell types we think are not in meninges --> dropped Adipocytes, preadipocytes, chondrocytes, hepatocytes, keratinocytes, Ly endothelial cells, Mv endothelial cells, melanocytes, mesangial cells, myocytes, smooth muscle
+# NB. MSC = mesenchymal stem cells
+# Also removed: "B-cells","DC", "Macrophages" in favour of the finer-grained subsets
+
+cellchoice <- c("aDC","cDC","iDC","pDC","Plasma cells","pro B-cells","naive B-cells","Class-switched memory B-cells","Memory B-cells","Basophils","Eosinophils","Tgd cells","Th1 cells","Th2 cells","Tregs","CD4+ memory T-cells","CD4+ naive T-cells","CD4+ T-cells","CD4+ Tcm","CD4+ Tem","CD8+ naive T-cells","CD8+ T-cells","CD8+ Tcm","CD8+ Tem","HSC","CLP","CMP","GMP","MEP","MPP","Endothelial cells","Epithelial cells","Erythrocytes","Fibroblasts","Astrocytes","Monocytes","Macrophages M1","Macrophages M2", "Mast cells","Megakaryocytes","MSC","Neurons","Pericytes","Neutrophils","NK cells","NKT","Osteoblast","Platelets")  
+
+set.seed(12345)
+xcellout <- xCellAnalysis(expr=forxcell, genes=rownames(forxcell),rnaseq=FALSE, cell.types.use=cellchoice) 
+
+```
+
+### xCell stats
+```{r}
+set.seed(12345)
+# Significance testing for whether cell types are likely present in the mixture
+tmp <- xCellSignifcanceBetaDist(xcellout, rnaseq=FALSE)
+# There are 14 samples. Only keep a cell type if there is evidence (p<0.05) for presence of the cell type in at least 5 samples
+(toselect <- apply(tmp,1,function(x){sum(x<0.1)}>=5))
+toselect %>% table 
+xcellsmall <- xcellout[toselect,]
+
+ypos <- apply(xcellsmall, 1, function(x){1.3*max(x)})
+                 
+# Melt for ggplot
+xcell <- reshape2::melt(xcellsmall, varnames=c("Celltype","sample"), value.name="proportion")
+# Add condition
+xcell$cond <- pData(gse.expFilt)$cond[match(xcell$sample,pData(gse.expFilt)$mouse)]
+
+library(ggpubr)
+library(ggsignif)
+anno_df <- ggpubr::compare_means(proportion ~ cond, group.by="Celltype",data=xcell, method="wilcox.test", paired=FALSE, p.adjust.method = "BH") %>%
+ dplyr::mutate(p.adj = format.pval(p.adj, digits = 1), p = format.pval(p, digits = 1))
+anno_df$y.position <- ypos
+
+order <- as.character(data.frame(anno_df %>% arrange(p))$Celltype)
+
+print(anno_df)
+
+xcell$Celltype <- factor(as.character(xcell$Celltype), levels=order, ordered=T)
+  
+# Figure S4C
+p <- ggplot(xcell, aes(x=cond, y=proportion)) + 
+  geom_boxplot(aes(fill=cond),position=position_dodge(), outlier.shape = NA) + theme_bw() + scale_fill_manual(values = c("light grey","red")) +
+  geom_jitter(color="black", width = 0.2) +
+  facet_wrap(~Celltype, scales = "free_y", ncol = 4) + stat_pvalue_manual(data=anno_df, label="p.signif", vjust=1.2)  + xlab("") + ylab("") # Note that p.signif is unadjusted p values
+p
+ggsave(p, filename = here::here("/pics/apollo_nih_stress_meninges_xcell_praw.pdf"), width=10, height=12)
+
+# Figure 3D
+p <- ggplot(xcell[xcell$Celltype %in% c("naive B-cells","Neutrophils","Monocytes"),], aes(x=cond, y=proportion)) + 
+  geom_boxplot(aes(fill=cond),position=position_dodge(), outlier.shape = NA) + theme_bw() + scale_fill_manual(values = c("light grey","red")) +
+  geom_jitter(color="black", width = 0.3, size=0.9) + # expand_limits(y=c(0,0.25)) +
+  facet_wrap(~Celltype, scales = "free_y", ncol = 4) + stat_pvalue_manual(data=anno_df[anno_df$Celltype %in% c("naive B-cells","Neutrophils","Monocytes"),], label="p.signif", vjust=1.2)  + xlab("") + ylab("")
+p
+ggsave(p, filename = here::here("/pics/apollo_nih_stress_meninges_xcell_praw_small.pdf"), width=4.7, height=2.2)
+```
+
+```{r}
+sessionInfo()
+```
+
+

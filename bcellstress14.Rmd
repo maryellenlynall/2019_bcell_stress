@@ -1,0 +1,866 @@
+---
+title: ""
+output: html_document
+---
+
+Statistical testing for effects of stress and strain on splenic and meningeal percentage marker expression
+Makes figures:
+- Figure 2C (stress: effect on splenic B cells)
+- Figure 5A and Figure 5B inset (CD19 deficiency: effect on B cells and neutrophils) 
+- Figure 2E (Splenic B cell MHCII+, CD25+ and Cd69+ plots: effect of stress)
+- Figure 3E (Meningeal B cell CD69 and MHCII: effects of stress)
+- Figure S3D (splenic percentage marker positivity: stress effect)
+- Figure S3C (splenic counts: stress effect)
+- Figure S4D (meningeal percentage marker positivity: stress effect)
+- Figure S9B (splenic percentage marker positivity: strain effect)
+- Figure S9C (meningeal percentage marker positivity: strain effect)
+
+Statistics use non-debatched counts (data_imp)
+Plots use debatched counts (inv_pls)
+
+```{r}
+library(ggplot2)
+library(here)
+library(tidyverse)
+library(magrittr)
+library(Rfit)
+load(here("res/data_imp.R")) # Non-debatched data
+load(here("res/apollo_together.RData")) # Debatched data
+
+prop_above_ll <- 0.9
+
+colnames(data_imp) %<>% gsub("\\+", "pos", .)
+colnames(data_imp) %<>% gsub("\\-", "neg", .)
+
+inv_pls <- inv_limma_pls 
+deb <- limma_deb
+
+star <- function(pval) {
+  if (pval < 0.001) {
+		return("***")
+		}
+	if (pval < 0.01) {
+		return("**")
+		}		
+	if (pval < 0.05) {
+		return("*")
+	}
+	else {
+	  return("")
+	}
+}
+
+options(scipen=100, digits=6)
+
+```
+
+CD9 B cells in stress vs. control
+Figure 2C right hand panel statistics
+```{r}
+
+# For stress
+subset <- inv_pls[inv_pls$strain=="wt",]
+wilcox.test(data=subset, fix_sme_ly_b_cd9 ~ cond)
+# Wilcoxon rank sum test, W=16, p = 0.005
+
+print("And here are the animal numbers for Figure 2C")
+subset %>% filter(!is.na(fix_sme_ly_b_cd9)) %>% select(cond) %>% table() 
+```
+
+Figure 5A RHS statistics
+```{r}
+# For strain
+subset <- inv_pls[inv_pls$cond=="hc",]
+wilcox.test(data=subset, fix_sme_ly_b_cd9 ~ strain)
+# p = 0.0001
+
+print("And here are the animal numbers for Figure 5A")
+subset %>% filter(!is.na(fix_sme_ly_b_cd9)) %>% select(strain) %>% table() 
+
+```
+
+Figure 2C plots
+```{r}
+# Plot IgD+ and IgD- B cell numbers
+choice <- c("fix_sme_ly_IgDpos","fix_sme_ly_IgDneg")
+subset <- inv_pls[inv_pls$strain=="wt",c("cond",choice)]
+subset$name <- rownames(subset)
+subset_long <- reshape2::melt(subset, id.vars=c("name","cond"))
+labs <- feature_labels[names(feature_labels) %in% choice]
+p <- ggplot(data=subset_long, aes(x = variable, y=value, fill=cond)) + 
+    geom_boxplot(outlier.shape=NA) + 
+    geom_point(position=position_jitterdodge(jitter.width = 0.3), size=1) +
+    ylab("log(counts)") +
+    ggtitle("") + 
+    theme(plot.title=element_text(size=7)) +
+    xlab("") + 
+    guides(fill=FALSE) + 
+    scale_x_discrete(labels=c("IgD+","IgD-")) + # CAREFUL THIS IS MANUAL ORDERING!!!
+    theme_bw() +
+    theme(axis.text.y=element_text(size=9), axis.title=element_text(size=10)) + 
+    scale_fill_manual(values=c("light grey","red")) 
+print(p)
+ggsave(p, path=here("pics"), filename = "apollo_stress_spleen_bcells_counts.pdf",width=3,height=3.5)
+
+
+# Plot CD9+ B cell numbers in stress vs. control
+choice <- c("fix_sme_ly_b_cd9")
+subset <- inv_pls[inv_pls$strain=="wt",c("cond",choice)]
+subset$name <- rownames(subset)
+subset_long <- reshape2::melt(subset, id.vars=c("name","cond"))
+labs <- feature_labels[names(feature_labels) %in% choice]
+p <- ggplot(data=subset_long, aes(x = variable, y=value, fill=cond)) + 
+    geom_boxplot(outlier.shape=NA) + 
+    geom_point(position=position_jitterdodge(jitter.width = 0.3), size=1) +
+    ylab("") +
+    ggtitle("") + 
+    theme(plot.title=element_text(size=7)) +
+    xlab("") + 
+    guides(fill=FALSE) + 
+    scale_x_discrete(labels=c("CD9+")) + # CAREFUL THIS IS MANUAL ORDERING!!!
+    theme_bw() +
+    theme(axis.text.y=element_text(size=9), axis.title=element_text(size=10)) + 
+    #annotate("text",x=1,y=10,label=paste0("p(adj) = ",signif(padjs[3],1))) +
+    scale_fill_manual(values=c("light grey","red")) 
+print(p)
+ggsave(p, path=here("pics"), filename = "apollo_stress_spleen_bcells_counts2.pdf",width=1.5,height=3.5)
+```
+
+Make condition legend
+```{r}
+p <- ggplot(data=subset_long, aes(x = variable, y=value, fill=cond)) + 
+    geom_boxplot(outlier.shape=NA) + scale_fill_manual(values=c("light grey","red"), labels=c(hc="Homecage",csd="Stress"), name="Condition") + theme_bw() + theme(legend.background = element_rect(color = "black"))
+
+get_legend<-function(myggplot){
+  tmp <- ggplot_gtable(ggplot_build(myggplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  return(legend)
+}
+library(cowplot)
+p <- ggdraw() + draw_plot(get_legend(p)) 
+ggsave(p, file=paste(here("pics/"),"apollo_legend_csd_hc.pdf",sep=""),width=2,height=1)
+```
+
+Figure 5A CD9 plot
+```{r}
+choice <- c("fix_sme_ly_b_cd9")
+subset <- inv_pls[inv_pls$cond=="hc",c("strain",choice)]
+subset$name <- rownames(subset)
+subset_long <- reshape2::melt(subset, id.vars=c("name","strain"))
+labs <- feature_labels[names(feature_labels) %in% choice]
+p <- ggplot(data=subset_long, aes(x = variable, y=value, fill=strain)) + 
+    geom_boxplot(outlier.shape=NA) + 
+    geom_point(position=position_jitterdodge(jitter.width = 0.3), size=1) +
+    ylab("") +
+    ggtitle("") + 
+    theme(plot.title=element_text(size=7)) +
+    xlab("") + 
+    guides(fill=FALSE) + 
+    scale_x_discrete(labels=c("CD9+")) + # CAREFUL THIS IS MANUAL ORDERING!!!
+    theme_bw() +
+    expand_limits(y=c(1,6)) +
+    theme(axis.text.y=element_text(size=9), axis.title=element_text(size=10)) + 
+    #annotate("text",x=1,y=10,label=paste0("p(adj) = ",signif(padjs[3],1))) +
+    scale_fill_manual(values=c("light grey","dark green")) 
+print(p)
+ggsave(p, path=here("pics"), filename = "apollo_strain_spleen_bcells_counts2.pdf",width=1.5,height=3.5)
+
+```
+
+Make strain legend
+```{r}
+# And a strain legend
+p <- ggplot(data=inv_pls, aes(x = strain, y=lc_men_b_both, fill=strain)) + 
+    geom_boxplot(outlier.shape=NA) + scale_fill_manual(values=c("light grey","dark green"), labels=c(wt="WT",cd19="CD19-/-"), name="Strain") + theme_bw() + theme(legend.background = element_rect(color = "black"))
+get_legend<-function(myggplot){
+  tmp <- ggplot_gtable(ggplot_build(myggplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  return(legend)
+}
+library(cowplot)
+p <- ggdraw() + draw_plot(get_legend(p)) 
+ggsave(p, file=paste(here("pics/"),"apollo_legend_strain.pdf",sep=""),width=2,height=1)
+
+```
+
+Figure 2E
+B cell MHCII+, CD25+ and Cd69+ plots
+```{r}
+# CD25 plot
+choice <- c("ly_cd25_of_igdpos","ly_cd25_of_igdneg")
+subset <- inv_pls[inv_pls$strain=="wt",c("cond",choice)]
+subset$name <- rownames(subset)
+subset_long <- reshape2::melt(subset, id.vars=c("name","cond"))
+labs <- feature_labels[names(feature_labels) %in% choice]
+p <- ggplot(data=subset_long, aes(x = variable, y=100*value, fill=cond)) + 
+    geom_boxplot(outlier.shape=NA) + 
+    geom_point(position=position_jitterdodge(jitter.width = 0.3), size=1) +
+    ylab("") +
+    ggtitle("CD25+ B cells") + 
+    theme(plot.title=element_text(size=7)) +
+    xlab("") + 
+    guides(fill=FALSE) + 
+    scale_x_discrete(labels=c("IgD+","IgD-")) + # CAREFUL THIS IS MANUAL ORDERING!!!
+    theme_bw() +
+    theme(axis.text.y=element_text(size=9), axis.title=element_text(size=10)) + 
+    scale_fill_manual(values=c("light grey","red")) 
+print(p)
+ggsave(p, path=here("pics"), filename = "apollo_stress_spleen_bcells_percs_cd25.pdf",width=1.8,height=3)
+
+# MHCII plot
+choice <- c("ly_mhcii_of_igdpos","ly_mhcii_of_igdneg")
+subset <- inv_pls[inv_pls$strain=="wt",c("cond",choice)]
+subset$name <- rownames(subset)
+subset_long <- reshape2::melt(subset, id.vars=c("name","cond"))
+labs <- feature_labels[names(feature_labels) %in% choice]
+p <- ggplot(data=subset_long, aes(x = variable, y=100*value, fill=cond)) + 
+    geom_boxplot(outlier.shape=NA) + 
+    geom_point(position=position_jitterdodge(jitter.width = 0.3), size=1) +
+    ylab("") +
+    ggtitle("MHCII+ B cells") + 
+    theme(plot.title=element_text(size=7)) +
+    xlab("") + 
+    guides(fill=FALSE) + 
+    scale_x_discrete(labels=c("IgD+","IgD-")) + # CAREFUL THIS IS MANUAL ORDERING!!!
+    theme_bw() +
+    theme(axis.text.y=element_text(size=9), axis.title=element_text(size=10)) + 
+    scale_fill_manual(values=c("light grey","red")) 
+print(p)
+ggsave(p, path=here("pics"), filename = "apollo_stress_spleen_bcells_percs_mhcii.pdf",width=1.8,height=3)
+
+# CD69 plot
+choice <- c("ly_cd69_of_igdpos","ly_cd69_of_igdneg")
+subset <- inv_pls[inv_pls$strain=="wt",c("cond",choice)]
+subset$name <- rownames(subset)
+subset_long <- reshape2::melt(subset, id.vars=c("name","cond"))
+labs <- feature_labels[names(feature_labels) %in% choice]
+p <- ggplot(data=subset_long, aes(x = variable, y=100*value, fill=cond)) + 
+    geom_boxplot(outlier.shape=NA) + 
+    geom_point(position=position_jitterdodge(jitter.width = 0.3), size=1) +
+    ylab("") +
+    ggtitle("CD69+ B cells") + 
+    theme(plot.title=element_text(size=7)) +
+    xlab("") + 
+    guides(fill=FALSE) + 
+    scale_x_discrete(labels=c("IgD+","IgD-")) + # CAREFUL THIS IS MANUAL ORDERING!!!
+    theme_bw() +
+    theme(axis.text.y=element_text(size=9), axis.title=element_text(size=10)) + 
+    scale_fill_manual(values=c("light grey","red")) 
+print(p)
+ggsave(p, path=here("pics"), filename = "apollo_stress_spleen_bcells_percs_cd69.pdf",width=1.8,height=3)
+
+```
+
+FIGURE 3E: Meningeal B cell CD69 and MHCII
+```{r}
+# MHCII plot
+subset <- inv_pls[inv_pls$strain=="wt",c("cond","ben_mhcii_of_b_both")]
+subset$name <- rownames(subset)
+labs <- feature_labels[names(feature_labels) %in% "ben_mhcii_of_b_both"]
+p1 <- ggplot(data=subset, aes(x = cond, y=100*ben_mhcii_of_b_both, fill=cond)) + 
+    geom_boxplot(outlier.shape=NA) + 
+    geom_jitter(width=0.2,shape=16) +
+    ylab("") +
+    ggtitle("MHCII+ B cells") + 
+    theme(plot.title=element_text(size=7)) +
+    xlab("") + 
+    guides(fill=FALSE) + 
+    theme_bw() +
+    expand_limits(y=c(0,80)) +
+    theme(axis.ticks.x=element_blank(),axis.text.x=element_blank(),axis.text.y=element_text(size=9), axis.title=element_text(size=10)) + 
+    scale_fill_manual(values=c("light grey","red")) 
+print(p1)
+
+# CD69+ B cells in meninges
+subset <- inv_pls[inv_pls$strain=="wt",c("cond","ben_cd69_of_b_both")]
+subset$name <- rownames(subset)
+labs <- feature_labels[names(feature_labels) %in% "ben_cd69_of_b_both"]
+p2 <- ggplot(data=subset, aes(x = cond, y=100*ben_cd69_of_b_both, fill=cond)) + 
+    geom_boxplot(outlier.shape=NA) + 
+    geom_jitter(width=0.2, shape=16) +
+    ylab("% positive") +
+    ggtitle("CD69+ B cells") + 
+    theme(plot.title=element_text(size=7)) +
+    xlab("") + 
+    guides(fill=FALSE) + 
+    theme_bw() +
+    expand_limits(y=c(0,7)) +
+    theme(axis.ticks.x=element_blank(),axis.text.x=element_blank(),axis.text.y=element_text(size=9), axis.title=element_text(size=10)) + 
+    scale_fill_manual(values=c("light grey","red")) 
+print(p2)
+
+g <- cowplot::plot_grid(p2,p1,align="hv",ncol=2)
+cowplot::save_plot(filename=paste0(here("pics/"),"apollo_men_b_percs_both.pdf"),plot=g,base_width=3,base_height=3)
+```
+
+
+Figure 5A
+Effects of CD19 deficiency on splenic and meningeal B cells
+```{r}
+# IgD+ in spleen
+choice <- c("fix_sme_ly_IgDpos","fix_sme_ly_IgDneg")
+subset <- inv_pls[inv_pls$cond=="hc",c("strain",choice)]
+subset$name <- rownames(subset)
+subset_long <- reshape2::melt(subset, id.vars=c("name","strain"))
+labs <- feature_labels[names(feature_labels) %in% choice]
+p1 <- ggplot(data=subset_long, aes(x = variable, y=value, fill=strain)) + 
+    geom_boxplot(outlier.shape=NA) + 
+    geom_point(position=position_jitterdodge(jitter.width = 0.3), size=1) +
+    ylab("log(counts)") +
+    ggtitle("Splenic B cells") + 
+    theme(plot.title=element_text(size=7)) +
+    xlab("") + 
+    guides(fill=FALSE) + 
+    scale_x_discrete(labels=c("IgD+","IgD-")) + # CAREFUL THIS IS MANUAL ORDERING!!!
+    theme_bw() +
+    expand_limits(y=27) +
+    theme(axis.ticks.x=element_blank(), axis.text.y=element_text(size=9), axis.title=element_text(size=10)) + 
+    scale_fill_manual(values=c("light grey","dark green")) 
+print(p1)
+
+# B in meninges
+subset <- inv_pls[inv_pls$cond=="hc",c("strain","lc_men_b_both")]
+subset$name <- rownames(subset)
+labs <- feature_labels[names(feature_labels) %in% "lc_men_b_both"]
+p2 <- ggplot(data=subset, aes(x = strain, y=lc_men_b_both, fill=strain)) + 
+    geom_boxplot(outlier.shape=NA) + 
+    geom_jitter(width=0.2, shape=16) +
+    ylab("") +
+    theme(plot.title=element_text(size=7)) +
+    xlab("") + 
+    ggtitle("Meningeal\nB cells") +
+    theme_bw() +
+    expand_limits(y=14) +
+    guides(fill=FALSE) +
+    theme(axis.ticks.x=element_blank(),axis.text.x=element_blank(),axis.text.y=element_text(size=9), axis.title=element_text(size=10)) + 
+    scale_fill_manual(values=c("light grey","dark green")) 
+print(p2)
+
+g <- cowplot::plot_grid(p1,p2,align="hv",ncol=2, rel_widths = c(1.7,1))
+cowplot::save_plot(filename=paste0(here("pics/"),"apollo_strain_b_cells.pdf"),plot=g,base_width=3,base_height=3)
+```
+
+Statistics for splenic percentage marker expression using rank-based linear model 
+FDR p value adjustment across all splenic percentages tested
+```{r}
+library(Rfit)
+yy <- as.numeric(splenic_percs)
+yy[] <- 1
+
+# Test effects of stress vs. control in WT animal
+p_cond_rank <- NULL
+for (i in 1:length(splenic_percs)){
+  subset <- forpls[!is.na(forpls[,splenic_percs[i]]) & forpls$strain=="wt",c("cond","coh",splenic_percs[i])]
+  subset$coh <- droplevels(subset$coh)
+  rs_rank <- rfit(data=subset, subset[,3] ~ cond + coh, na.action=na.omit)
+  p_cond_rank[i] <- summary(rs_rank)$coefficients["condcsd","p.value"]
+}
+spl_padj_cond_rank <- p.adjust(p_cond_rank,method = "BH")
+
+# Test effects of CD19 vs. WT in homecage unstressed animals
+p_strain_rank <- NULL
+for (i in 1:length(splenic_percs)){
+  subset <- forpls[!is.na(forpls[,splenic_percs[i]]) & forpls$cond=="hc",c("strain","coh",splenic_percs[i])]
+  subset$coh <- droplevels(subset$coh)
+  rs_rank <- rfit(data=subset, subset[,3] ~ strain + coh, na.action=na.omit)
+  p_strain_rank[i] <- summary(rs_rank)$coefficients["straincd19","p.value"]
+}
+spl_padj_strain_rank <- p.adjust(p_strain_rank,method = "BH")
+
+for (i in 1:length(splenic_percs)){
+  subset <- inv_pls[inv_pls$strain=="wt",c("cond",splenic_percs[i])]
+  subset[,2] <- 100*subset[,2]
+  p <- ggplot(data=subset, aes(x = cond, y=subset[,splenic_percs[i]], fill=cond)) + geom_boxplot(outlier.alpha=0) +
+    geom_jitter(width=0.1,height=0) + ylab(splenic_percs[i]) + xlab("") +
+    annotate("text",label=paste("p(adj)=",signif(spl_padj_cond_rank[i],1),sep=""),x=1.5,y=yy[i], size=5) + guides(fill=FALSE) +
+    scale_x_discrete(labels=c("HC","Stress")) + 
+    theme(axis.text.x=element_text(size=20), axis.text.y=element_text(size=15),axis.title=element_text(size=20), plot.title=element_text(size=20)) + 
+    scale_fill_manual(values=c("light grey","red")) + xlab("")
+  p
+}
+
+for (i in 1:length(splenic_percs)){
+  subset <- inv_pls[inv_pls$cond=="hc",c("strain",splenic_percs[i])]
+  subset[,2] <- 100*subset[,2]
+  p <- ggplot(data=subset, aes(x = strain, y=subset[,splenic_percs[i]], fill=strain)) + geom_boxplot(outlier.alpha=0) + 
+    geom_jitter(width=0.1,height=0) + ylab(splenic_percs[i]) + xlab("") + 
+    annotate("text",label=paste("p(adj)=",signif(spl_padj_strain_rank[i],1),sep=""),x=1.5,y=yy[i], size=5) + guides(fill=FALSE) + 
+    scale_x_discrete(labels=c("WT","CD19-/-")) + 
+    theme(axis.text.x=element_text(size=20), axis.text.y=element_text(size=15), axis.title=element_text(size=20), plot.title=element_text(size=20)) + 
+    scale_fill_manual(values=c("light grey","dark green")) + xlab("")
+  p
+}
+
+# How many multiple comparisons have we corrected across?
+length(splenic_percs) # = 27
+
+```
+
+Statistics for meningeal percentage marker expression using rank-based linear model 
+FDR p value adjustment across all meningeal percentages tested
+```{r}
+
+library(Rfit)
+# yy defines location of the text
+yy <- as.numeric(men_percs)
+yy[] <- 1
+
+# Effect of conditino
+p_cond_rank <- NULL
+for (i in 1:length(men_percs)){
+  subset <- forpls[!is.na(forpls[,men_percs[i]]) & forpls$strain=="wt",c("cond","coh",men_percs[i])]
+  subset$coh <- droplevels(subset$coh)
+  rs_rank <- rfit(data=subset, subset[,3] ~ cond + coh, na.action=na.omit)
+  p_cond_rank[i] <- summary(rs_rank)$coefficients["condcsd","p.value"]
+}
+padj_cond_rank_men <- p.adjust(p_cond_rank,method = "BH")
+
+# Effects of strain
+p_strain_rank <- NULL
+for (i in 1:length(men_percs)){
+  subset <- forpls[!is.na(forpls[,men_percs[i]]) & forpls$cond=="hc",c("strain","coh",men_percs[i])]
+  subset$coh <- droplevels(subset$coh)
+  rs_rank <- rfit(data=subset, subset[,3] ~ strain + coh, na.action=na.omit)
+  p_strain_rank[i] <- summary(rs_rank)$coefficients["straincd19","p.value"]
+}
+padj_strain_rank_men <- p.adjust(p_strain_rank,method = "BH")
+
+# Generate plots
+for (i in 1:length(men_percs)){
+subset <- inv_pls[inv_pls$cond=="hc",c("strain",men_percs[i])]
+subset[,2] <- 100*subset[,2]
+p <- ggplot(data=subset, aes(x = strain, y=subset[,men_percs[i]], fill=strain)) + geom_boxplot(outlier.alpha=0) + geom_jitter(width=0.1,height=0) + ylab(men_percs[i]) + xlab("") + annotate("text",label=paste("p(adj)=",signif(padj_strain_rank_men[i],1),sep=""),x=1.5,y=yy[i], size=5) + guides(fill=FALSE) + scale_x_discrete(labels=c("WT","CD19-/-")) + theme_bw() + theme(axis.text.x=element_text(size=20), axis.text.y=element_text(size=11), axis.title=element_text(size=20), plot.title=element_text(size=20)) + scale_fill_manual(values=c("light grey","dark green")) + xlab("")
+p
+}
+
+for (i in 1:length(men_percs)){
+  subset <- inv_pls[inv_pls$strain=="wt",c("cond",men_percs[i])]
+  subset[,2] <- 100*subset[,2]
+  p <- ggplot(data=subset, aes(x = cond, y=subset[,men_percs[i]], fill=cond)) + 
+    geom_boxplot(outlier.alpha=0) + 
+    geom_jitter(width=0.1,height=0) + ylab(men_percs[i]) + xlab("") + 
+    annotate("text",label=paste("p(adj)=",signif(padj_cond_rank_men[i],1),sep=""),x=1.5,y=yy[i], size=5) + guides(fill=FALSE) +
+    scale_x_discrete(labels=c("HC","Stress")) + 
+    theme(axis.text.x=element_text(size=20), axis.text.y=element_text(size=11), axis.title=element_text(size=20), plot.title=element_text(size=20)) + 
+    scale_fill_manual(values=c("light grey","red")) + xlab("")
+  p
+} 
+
+# Number of multiple comparisons corrected for
+length(men_percs) # = 7
+
+```
+
+Figure S9B
+STRAIN effect on splenic percentage marker expression
+```{r}
+B <- data.frame(choice=splenic_percs)
+B$ypos <- 1
+B$truth <- FALSE
+B$yax <- ""
+rownames(B) <- B$choice
+# Number indicates height at which to plot significance bar.
+B["ly_cd69_of_igdpos", 2:4] = c(0.5,TRUE,"% CD69+ of IgD+\nB cells")
+B["ly_cd69_of_igdneg",2:4] = c(1,TRUE,"% CD69+ of IgD-\nB cells")
+B["ly_cd62l_of_igdpos",2:4] = c(8,FALSE,"% CD62L+ of IgD+\nB cells")
+B["ly_cd62l_of_igdneg",2:4] = c(40,FALSE,"% CD62L+ of IgD-\nB cells")
+B["ly_cd25_of_igdpos",2:4] = c(10,TRUE,"% CD25+ of IgD+\nB cells")
+B["ly_cd25_of_igdneg",2:4] = c(0.7,TRUE,"% CD25+ of IgD-\nB cells")
+B["ly_mhcii_of_igdpos",2:4] = c(100,TRUE,"% MHCII+ of IgD+\nB cells")
+B["ly_mhcii_of_igdneg",2:4] = c(60,TRUE,"% MHCII+ of IgD-\nB cells")
+B["my_cd86_of_b", 2:4] = c(2,FALSE,"% CD86+ B cells")
+B["my_cd86_of_cdcs_cd11bpos",2:4] = c(2,FALSE,"% CD86+ of CD11b+\ncDCs")
+B["my_cd86_of_cdcs_cd11bneg",2:4] = c(2,FALSE,"% CD86+ of CD11b-\ncDCs")
+B["my_cx3cr1_of_cdcs_cd11bpos",2:4] = c(22,TRUE,"% CX3CR1+ of\nCD11b+ cDCs")
+B["my_cx3cr1_of_cdcs_cd11bneg",2:4] = c(28,TRUE,"% CX3CR1+ of\nCD11b- cDCs")
+B["my_cd103_of_cdcs_cd11bpos",2:4] = c(1.5,FALSE,"% CD103+ of\nCD11b+ cDCs")
+B["my_cd103_of_cdcs_cd11bneg",2:4] = c(2,FALSE,"% CD103+ of\nCD11b- cDCs")
+B["my_cd68_of_f480macs",2:4] = c(2,FALSE,"% CD68+ of F480+\nmacrophages")
+B["my_cx3cr1_of_inflamm_mono",2:4] = c(105,TRUE,"% CX3CR1+ of Ly6C(hi)\nmonocytes")
+B["ly_cd69_of_nk",2:4] = c(0.8,TRUE,"% CD69+ of NK cells")
+B["ly_cd69_of_nkt",2:4] = c(8,TRUE,"% CD69+ of NKT cells")
+B["ly_cd25_of_nk",2:4] = c(0.07,TRUE,"% CD25+ of NK cells")
+B["ly_cd25_of_nkt",2:4] = c(20,TRUE,"% CD25+ of NKT cells")
+B["ly_cd25_of_helper", 2:4] = c(2,FALSE,"% CD25+ of T(helper)")
+B["ly_cd25_of_cytotoxic",2:4] = c(2,FALSE,"% CD25+ of T(cytotoxic)")
+B["ly_cd69_of_helper",2:4] = c(2,FALSE,"% CD69+ of T(helper)")
+B["ly_cd69_of_cytotoxic",2:4] = c(2,FALSE,"% CD69+ of T(cytotoxic)")
+B["ly_cd62l_of_helper",2:4] = c(2,FALSE,"% CD62L+ of T(helper)")
+B["ly_cd62l_of_cytotoxic",2:4] = c(2,FALSE,"% CD62L+ of T(cytotoxic)")
+
+# Add the information about adjusted p value
+B$padj <- spl_padj_strain_rank
+B$ypos <- as.numeric(B$ypos)
+
+# Generate plot
+p <- list()
+for (i in 1:dim(B)[1])
+  local({
+  i=i
+  choo <- as.character(B$choice[i])
+  subset <- inv_pls[inv_pls$cond=="hc",c("strain",choo)]
+  subset[,2] <- 100*subset[,2]
+  lab <- star(B$padj[i])
+  p <- ggplot(data=subset, aes(x = strain, y=subset[,2], fill=strain)) + 
+    geom_boxplot(outlier.alpha=0) + 
+    geom_jitter(width=0.2,height=0, size=0.5, shape=16) + 
+    ylab("") +
+    ggtitle(B$yax[i]) + 
+    theme(plot.title=element_text(size=7)) +
+    xlab("") + 
+    annotate(geom="text",label=lab,x=1.5,y=B$ypos[i], size=5) + 
+    guides(fill=FALSE) + 
+    expand_limits(y=c(0,1.1*B$ypos[i])) + 
+    scale_x_discrete(labels=c("WT","CD19-/-")) + theme_bw() +
+    theme(axis.text.x=element_blank(), axis.text.y=element_text(size=8), axis.title=element_text(size=5)) + 
+    scale_fill_manual(values=c("light grey","dark green")) 
+  print(i)
+  print(p)
+  p[[i]] <<- p
+  })
+
+# Plot
+g <- cowplot::plot_grid(plotlist=p, nrow = 4, rel_heights = c(1,1), rel_widths = c(1,1), align = "hv")
+cowplot::save_plot(filename = "apollo_inv_func_markers_perc_strain_all.pdf", g, path=here("pics"), base_width=11, base_height=8)
+
+```
+
+
+Figure S3D
+Stress effect on splenic percentages
+```{r}
+library(gridExtra)
+B <- data.frame(choice=splenic_percs)
+B$ypos <- 1
+B$truth <- FALSE
+B$yax <- ""
+rownames(B) <- B$choice
+B["ly_cd69_of_igdpos", 2:4] = c(0.25,TRUE,"% CD69+ of IgD+\nB cells")
+B["ly_cd69_of_igdneg",2:4] = c(0.25,TRUE,"% CD69+ of IgD-\nB cells")
+B["ly_cd62l_of_igdpos",2:4] = c(90,FALSE,"% CD62L+ of IgD+\nB cells")
+B["ly_cd62l_of_igdneg",2:4] = c(32,FALSE,"% CD62L+ of IgD-\nB cells")
+B["ly_cd25_of_igdpos",2:4] = c(3,TRUE,"% CD25+ of IgD+\nB cells")
+B["ly_cd25_of_igdneg",2:4] = c(0.29,TRUE,"% CD25+ of IgD-\nB cells")
+B["ly_mhcii_of_igdpos",2:4] = c(100,TRUE,"% MHCII+ of IgD+\nB cells")
+B["ly_mhcii_of_igdneg",2:4] = c(75,TRUE,"% MHCII+ of IgD-\nB cells")
+B["my_cd86_of_b", 2:4] = c(10,TRUE,"% CD86+ B cells")
+B["my_cd86_of_cdcs_cd11bpos",2:4] = c(2,FALSE,"% CD86+ of\nCD11b+ cDCs")
+B["my_cd86_of_cdcs_cd11bneg",2:4] = c(2,FALSE,"% CD86+ of\nCD11b- cDCs")
+B["my_cx3cr1_of_cdcs_cd11bpos",2:4] = c(30,FALSE,"% CX3CR1+ of\nCD11b+ cDCs")
+B["my_cx3cr1_of_cdcs_cd11bneg",2:4] = c(18,FALSE,"% CX3CR1+ of\nCD11b- cDCs")
+B["my_cd103_of_cdcs_cd11bpos",2:4] = c(11,FALSE,"% CD103+ of\nCD11b+ cDCs")
+B["my_cd103_of_cdcs_cd11bneg",2:4] = c(64,FALSE,"% CD103+ of\nCD11b- cDCs")
+B["my_cd68_of_f480macs",2:4] = c(2,FALSE,"% CD68+ of F480+\nmacrophages")
+B["my_cx3cr1_of_inflamm_mono",2:4] = c(110,TRUE,"% CX3CR1+ of Ly6C(hi)\nmonocytes")
+B["ly_cd69_of_nk",2:4] = c(1,TRUE,"% CD69+ of NK cells")
+B["ly_cd69_of_nkt",2:4] = c(7,FALSE,"% CD69+ of NKT cells")
+B["ly_cd25_of_nk",2:4] = c(0.4,TRUE,"% CD25+ of NK cells")
+B["ly_cd25_of_nkt",2:4] = c(18,FALSE,"% CD25+ of NKT cells")
+B["ly_cd25_of_helper", 2:4] = c(5,FALSE,"% CD25+ of T(helper)")
+B["ly_cd25_of_cytotoxic",2:4] = c(52,FALSE,"% CD25+ of T(cytotoxic)")
+B["ly_cd69_of_helper",2:4] = c(2,FALSE,"% CD69+ of T(helper)")
+B["ly_cd69_of_cytotoxic",2:4] = c(2.8,FALSE,"% CD69+ of T(cytotoxic)")
+B["ly_cd62l_of_helper",2:4] = c(95,FALSE,"% CD62L+ of T(helper)")
+B["ly_cd62l_of_cytotoxic",2:4] = c(75,FALSE,"% CD62L+ of T(cytotoxic)")
+
+B$padj <- spl_padj_cond_rank
+B$ypos <- as.numeric(B$ypos)
+
+p <- list()
+for (i in 1:dim(B)[1])
+  local({
+  i=i
+  choo <- as.character(B$choice[i])
+  subset <- inv_pls[inv_pls$strain=="wt",c("cond",choo)]
+  subset[,2] <- 100*subset[,2]
+  lab <- star(B$padj[i])
+  print(paste(i,lab, sep=" "))
+  p <- ggplot(data=subset, aes(x = cond, y=subset[,2], fill=cond)) + geom_boxplot(outlier.alpha=0) + geom_jitter(width=0.1,height=0, size=0.5) + ylab("") +     ggtitle(B$yax[i]) +      theme(plot.title=element_text(size=7)) +xlab("") + 
+    annotate(geom="text",label=lab,x=1.5,y=B$ypos[i], size=5) + guides(fill=FALSE) + scale_x_discrete(labels=c("HC","Stress")) + theme_bw() + theme(axis.text.x=element_blank(), axis.text.y=element_text(size=8), axis.title=element_text(size=5)) + expand_limits(y=c(0,1.1*B$ypos[i])) + scale_fill_manual(values=c("light grey","red")) 
+  print(i)
+  print(p)
+  p[[i]] <<- p
+  })
+
+# Figure S3D
+g <- cowplot::plot_grid(plotlist=p, nrow = 4, rel_heights = c(1,1), rel_widths = c(1,1), align = "hv")
+cowplot::save_plot(filename = "apollo_inv_func_markers_perc_stress_all.pdf", g, path=here("pics"), base_width=11, base_height=8)
+
+```
+
+
+Plots for effect of strain on meningeal flow percentages
+```{r}
+B <- data.frame(choice=men_percs)
+B$ypos <- 1
+B$truth <- FALSE
+B$yax <- ""
+rownames(B) <- B$choice
+B["ben_upper_of_b",2:4] = c(55,TRUE,"% CD45(hi) of B cells")
+B["ben_cd69_of_b_both",2:4] = c(2.3,TRUE,"% CD69+ of B cells")
+B["ben_cd69_of_cytotoxic",2:4] = c(57,TRUE,"% CD69+ of T(cytotoxic)")
+B["ben_cd69_of_helper", 2:4] = c(45,FALSE,"% CD69+ of T(helper)")
+B["ben_cd69_of_nk",2:4] = c(45,FALSE,"% CD69+ of NK cells")
+B["ben_mhcii_of_b_both",2:4] = c(76,TRUE,"% MHCII+ of B cells")
+B["ben_cx3cr1_of_ly6cmono",2:4] = c(82,TRUE,"% CX3CR1+ of Ly6C(hi)\nmonocytes")
+B$padj <- padj_strain_rank_men # Order must be identical!!!
+B$ypos <- as.numeric(B$ypos)
+
+#Now make the picture
+p <- list()
+for (i in 1:dim(B)[1])
+  local({
+  i=i
+  choo <- as.character(B$choice[i])
+  subset <- inv_pls[inv_pls$cond=="hc",c("strain",choo)]
+  subset[,2] <- 100*subset[,2]
+  lab <- star(B$padj[i])
+  p <- ggplot(data=subset, aes(x = strain, y=subset[,2], fill=strain)) + geom_boxplot(outlier.alpha=0) + geom_jitter(width=0.1,height=0, size=0.5, shape=16) + ylab("") +     ggtitle(B$yax[i]) +      theme(plot.title=element_text(size=7)) +xlab("") + 
+    annotate(geom="text",label=lab,x=1.5,y=B$ypos[i], size=5) + guides(fill=FALSE) + scale_x_discrete(labels=c("WT","CD19-/-")) + theme_bw() + theme(axis.text.x=element_blank(), axis.text.y=element_text(size=8), axis.title=element_text(size=5)) + expand_limits(y=c(0,1.1*B$ypos[i])) + scale_fill_manual(values=c("light grey","dark green")) 
+  print(i)
+  print(p)
+  p[[i]] <<- p
+  })
+
+# All plots for supplementary material
+g <- cowplot::plot_grid(plotlist=p, nrow = 2, rel_heights = c(1,1), rel_widths = c(1,1), align = "hv")
+save_plot(filename = "apollo_inv_func_markers_perc_strain_all_men.pdf", g, path=here("pics"), base_width=5, base_height=4.5)
+
+```
+
+
+Effect of stress on meningeal flow percentage marker positivity
+Figure S4D
+```{r}
+B <- data.frame(choice=men_percs)
+B$ypos <- 1
+B$truth <- FALSE
+B$yax <- ""
+rownames(B) <- B$choice
+B["ben_upper_of_b",2:4] = c(55,TRUE,"% CD45(hi) of B cells")
+B["ben_cd69_of_b_both",2:4] = c(5,TRUE,"% CD69+ of B cells")
+B["ben_cd69_of_cytotoxic",2:4] = c(60,FALSE,"% CD69+ of T(cytotoxic)")
+B["ben_cd69_of_helper", 2:4] = c(50,FALSE,"% CD69+ of T(helper)")
+B["ben_cd69_of_nk",2:4] = c(60,TRUE,"% CD69+ of NK cells")
+B["ben_mhcii_of_b_both",2:4] = c(70,FALSE,"% MHCII+ of B cells")
+B["ben_cx3cr1_of_ly6cmono",2:4] = c(83,TRUE,"% CX3CR1+ of Ly6C(hi)\nmonocytes")
+B$padj <- padj_cond_rank_men
+B$ypos <- as.numeric(B$ypos)
+
+p <- list()
+for (i in 1:dim(B)[1])
+  local({
+  i=i
+  choo <- as.character(B$choice[i])
+  subset <- inv_pls[inv_pls$strain=="wt",c("cond",choo)]
+  subset[,2] <- 100*subset[,2]
+  lab <- star(B$padj[i])
+  p <- ggplot(data=subset, aes(x = cond, y=subset[,2], fill=cond)) + geom_boxplot(outlier.alpha=0) + geom_jitter(width=0.1,height=0, size=0.5, shape=16) + ylab("") +     ggtitle(B$yax[i]) +      theme(plot.title=element_text(size=7)) +xlab("") + 
+    annotate(geom="text",label=lab,x=1.5,y=B$ypos[i], size=5) + guides(fill=FALSE) + scale_x_discrete(labels=c("HC","Stress")) + theme_bw() + 
+    theme(axis.text.x=element_blank(), axis.text.y=element_text(size=8), axis.title=element_text(size=5)) + expand_limits(y=c(0,1.1*B$ypos[i])) + scale_fill_manual(values=c("light grey","red")) 
+  print(i)
+  print(p)
+  p[[i]] <<- p
+  })
+
+g <- cowplot::plot_grid(plotlist=p, nrow = 2, rel_heights = c(1,1), rel_widths = c(1,1), align = "hv")
+save_plot(filename = "apollo_inv_func_markers_perc_cond_all_men.pdf", g, path=here("pics"), base_width=5, base_height=4)
+
+```
+
+Now make cellular abundance plots
+
+SPLENIC ABUNDANCE - STRESS
+Figure 2C
+```{r}
+library(ggsignif)
+inv_pls$fix_sme_ly_b_both <- inv_pls$fix_sme_ly_IgDneg + inv_pls$fix_sme_ly_IgDpos
+
+splenic_abund <- c("fix_sme_my_neutrophils","fix_sme_my_inflamm_mono","fix_sme_ly_b_both","fix_sme_ly_plasma","fix_sme_my_f4_80_macs","fix_sme_ly_IgDpos","fix_sme_ly_IgDneg","fix_sme_ly_IgDpos_cd9","fix_sme_ly_IgDpos_cd9neg","fix_sme_ly_IgDneg_cd9","fix_sme_ly_IgDneg_cd9neg") # Changing order here changes order of graph
+B <- data.frame(choice=splenic_abund)
+B$ypos <- 1
+B$truth <- FALSE
+B$yax <- ""
+rownames(B) <- B$choice
+B["fix_sme_my_neutrophils",2:4] = c(10,TRUE,"log(neutrophils)")
+B["fix_sme_my_inflamm_mono",2:4] = c(19,TRUE,"log(Ly6C^{hi}~monocytes)")
+B["fix_sme_ly_b_both", 2:4] = c(1,TRUE,"log(B~cells)")
+B["fix_sme_ly_plasma", 2:4] = c(1,TRUE,"log(plasma~cells)")
+B["fix_sme_my_f4_80_macs", 2:4] = c(1,TRUE,"log(F4*'/'*80^{'+'}~\nmacrophages)")
+B["fix_sme_ly_IgDpos", 2:4] = c(1,TRUE,"log(IgD^{'+'}~B~cells)")
+B["fix_sme_ly_IgDneg", 2:4] = c(1,TRUE,"log(IgD^{'-'}~B~cells)")
+B["fix_sme_ly_IgDpos_cd9",2:4] = c(2.5,TRUE,"log(IgD^{'+'}*CD9^{'+'}~B~cells)")
+B["fix_sme_ly_IgDpos_cd9neg",2:4] = c(2,TRUE,"log(IgD^{'+'}*CD9^{'-'}~B~cells)")
+B["fix_sme_ly_IgDneg_cd9",2:4] = c(2.5,TRUE,"log(IgD^{'-'}*CD9^{'+'}~B~cells)")
+B["fix_sme_ly_IgDneg_cd9neg",2:4] = c(2,TRUE,"log(IgD^{'-'}*CD9^{'-'}~B~cells)")
+
+B$ypos <- as.numeric(B$ypos)
+
+p <- list()
+for (i in 1:dim(B)[1])
+  local({
+  i=i
+  choo <- as.character(B$choice[i])
+  subset <- inv_pls[!is.na(inv_pls[,choo]) & inv_pls$strain=="wt",c("cond",choo)]
+  p <- ggplot(data=subset, aes(x = cond, y=subset[,2], fill=cond)) + geom_boxplot(outlier.alpha=0) + 
+    geom_jitter(width=0.1,height=0, size=0.5, shape=16) + 
+    ylab(parse(text=B$yax[i])) + 
+    xlab("") + guides(fill=FALSE) + scale_x_discrete(labels=c("HC","Stress")) + theme_bw() + theme(axis.text.x=element_blank(), axis.text.y=element_text(size=8), axis.title=element_text(size=10)) + scale_fill_manual(values=c("light grey","red")) 
+  print(i)
+  print(p)
+  p[[i]] <<- p
+  })
+
+g <- do.call(grid.arrange,c(p[1:5], nrow=1))
+
+save_plot(filename = "apollo_inv_abund_spleen_stress_top.pdf", g, path=here("pics"), base_width=5.8, base_height=2)
+g <- do.call(grid.arrange,c(p[6:7], nrow=1))
+save_plot(filename = "apollo_inv_abund_spleen_stress_middle.pdf", g, path=here("pics"), base_width=2.7, base_height=1.8)
+g <- do.call(grid.arrange,c(p[8:11], nrow=1))
+save_plot(filename = "apollo_inv_abund_spleen_stress_bottom.pdf", g, path=here("pics"), base_width=4.7, base_height=1.8)
+
+```
+
+
+SPLENIC ABUNDANCE - STRAIN. FOR SUPPLEMENTARY FIGURE
+Figure 5B inset
+```{r}
+library(gridExtra)
+splenic_abund <- c("fix_sme_my_neutrophils","fix_sme_ly_b_both","fix_sme_ly_plasma","fix_sme_ly_IgDpos","fix_sme_ly_IgDneg","fix_sme_ly_IgDpos_cd9","fix_sme_ly_IgDpos_cd9neg","fix_sme_ly_IgDneg_cd9","fix_sme_ly_IgDneg_cd9neg")
+B <- data.frame(choice=splenic_abund)
+B$ypos <- 1
+B$truth <- FALSE
+B$yax <- ""
+rownames(B) <- B$choice
+B["fix_sme_my_neutrophils",2:4] = c(10,TRUE,"log(neutrophils)")
+B["fix_sme_ly_b_both", 2:4] = c(1,TRUE,"log(B~cells)")
+B["fix_sme_ly_plasma", 2:4] = c(1,TRUE,"log(plasma~cells)")
+B["fix_sme_ly_IgDpos", 2:4] = c(1,TRUE,"log(IgD^{'+'}~B~cells)")
+B["fix_sme_ly_IgDneg", 2:4] = c(1,TRUE,"log(IgD^{'-'}~B~cells)")
+B["fix_sme_ly_IgDpos_cd9",2:4] = c(2.5,TRUE,"log(IgD^{'+'}*CD9^{'+'}~B~cells)")
+B["fix_sme_ly_IgDpos_cd9neg",2:4] = c(2,TRUE,"log(IgD^{'+'}*CD9^{'-'}~B~cells)")
+B["fix_sme_ly_IgDneg_cd9",2:4] = c(2.5,TRUE,"log(IgD^{'-'}*CD9^{'+'}~B~cells)")
+B["fix_sme_ly_IgDneg_cd9neg",2:4] = c(2,TRUE,"log(IgD^{'-'}*CD9^{'-'}~B~cells)")
+
+B$ypos <- as.numeric(B$ypos)
+
+p <- list()
+for (i in 1:dim(B)[1])
+  local({
+  i=i
+  choo <- as.character(B$choice[i])
+  subset <- inv_pls[!is.na(inv_pls[,choo]) & inv_pls$cond=="hc",c("strain",choo)]
+  p <- ggplot(data=subset, aes(x = strain, y=subset[,2], fill=strain)) + geom_boxplot(outlier.alpha=0) + geom_jitter(width=0.2,height=0, size=0.5, shape=16) + ylab(parse(text=B$yax[i])) + xlab("") + guides(fill=FALSE) + scale_x_discrete(labels=c("WT","CD19-/-")) + theme_bw() + theme(axis.text.x=element_blank(), axis.text.y=element_text(size=8), axis.title=element_text(size=10)) + scale_fill_manual(values=c("light grey","dark green")) + theme_bw()
+  print(i)
+  print(p)
+  p[[i]] <<- p
+  })
+
+g <- do.call(grid.arrange,c(p[1:3], nrow=1))
+save_plot(filename = "apollo_inv_abund_spleen_strain_top.pdf", g, path=here("pics"), base_width=4.2, base_height=1.8)
+g <- do.call(grid.arrange,c(p[4:5], nrow=1))
+save_plot(filename = "apollo_inv_abund_spleen_strain_middle.pdf", g, path=here("pics"), base_width=2.7, base_height=1.8)
+g <- do.call(grid.arrange,c(p[6:9], nrow=1))
+save_plot(filename = "apollo_inv_abund_spleen_strain_bottom.pdf", g, path=here("pics"), base_width=4.7, base_height=1.8)
+
+g <- plot_grid(plotlist=p[6:9], nrow = 4, align="hv")
+save_plot(filename = "apollo_inv_abund_spleen_strain_bottom_long.pdf", g, path=here("pics"), base_width=1.8, base_height=7.5)
+
+```
+
+
+Plot meningeal counts (not shown)
+```{r}
+# These are the debatched log counts:
+men_abund <- c("lc_men_b_both","lc_men_ly6c.mono","lc_men_neut","lc_men_MHCIIneg") # Changing order here changes order of graph
+B <- data.frame(choice=men_abund)
+B$ypos <- 1
+B$truth <- FALSE
+B$yax <- ""
+rownames(B) <- B$choice
+B["lc_men_b_both",2:4] = c(10,TRUE,"log(B~cells)")
+B["lc_men_ly6c.mono",2:4] = c(19,TRUE,"log(Ly6C^{hi}~monocytes)")
+B["lc_men_neut", 2:4] = c(1,TRUE,"log(neutrophils)")
+B["lc_men_MHCIIneg", 2:4] = c(1,TRUE,"log(CD64^{'+'}*MHCII^{'-'}~macrophages)")
+B$ypos <- as.numeric(B$ypos)
+
+p <- list()
+for (i in 1:dim(B)[1])
+  local({
+  i=i
+  choo <- as.character(B$choice[i])
+  subset <- inv_pls[!is.na(inv_pls[,choo]) & inv_pls$strain=="wt",c("cond",choo)]
+  p <- ggplot(data=subset, aes(x = cond, y=subset[,2], fill=cond)) + geom_boxplot(outlier.alpha=0) + geom_jitter(width=0.2,height=0, size=0.5, shape=16) + ylab(parse(text=B$yax[i])) + xlab("") + guides(fill=FALSE) + scale_x_discrete(labels=c("HC","Stress")) + theme_bw() + theme(axis.text.x=element_blank(), axis.text.y=element_text(size=8), axis.title=element_text(size=10)) + scale_fill_manual(values=c("light grey","red")) 
+  print(i)
+  print(p)
+  p[[i]] <<- p
+  })
+
+g <- do.call(grid.arrange,c(p, nrow=1))
+save_plot(filename = "apollo_inv_abund_men_stress.pdf", g, path=here("pics"), base_width=5.5, base_height=2.4)
+
+```
+
+Now plot effects of strain on meningeal cell abundance
+```{r}
+# These are the debatched log counts:
+men_abund <- c("lc_men_neut") # Changing order here changes order of graph
+B <- data.frame(choice=men_abund)
+B$ypos <- 1
+B$truth <- FALSE
+B$yax <- ""
+rownames(B) <- B$choice
+B["lc_men_neut", 2:4] = c(1,TRUE,"log(neutrophils)")
+B$ypos <- as.numeric(B$ypos)
+
+p <- list()
+for (i in 1:dim(B)[1])
+  local({
+  i=i
+  choo <- as.character(B$choice[i])
+  subset <- inv_pls[!is.na(inv_pls[,choo]) & inv_pls$cond=="hc",c("strain",choo)]
+  p <- ggplot(data=subset, aes(x = strain, y=subset[,2], fill=strain)) + geom_boxplot(outlier.alpha=0) + geom_jitter(width=0.2,height=0, size=0.5, shape=16) + ylab(parse(text=B$yax[i])) + xlab("") + guides(fill=FALSE) + scale_x_discrete(labels=c("WT","CD19-/-")) + theme_bw() + theme(axis.text=element_text(size=8), axis.title=element_text(size=10)) + scale_fill_manual(values=c("light grey","dark green")) 
+  print(i)
+  print(p)
+  p[[i]] <<- p
+  })
+
+g <- do.call(grid.arrange,c(p, nrow=1))
+save_plot(filename = "apollo_inv_abund_men_strain.pdf", g, path=here("pics"), base_width=2, base_height=2)
+```
+
+Effects of strain on meningeal B cells counts
+```{r}
+
+men_abund <- c("lc_men_b_both") 
+B <- data.frame(choice=men_abund)
+B$ypos <- 1
+B$truth <- FALSE
+B$yax <- ""
+rownames(B) <- B$choice
+B["lc_men_b_both", 2:4] = c(1,TRUE,"log(B~cells)")
+B$ypos <- as.numeric(B$ypos)
+
+p <- list()
+for (i in 1:dim(B)[1])
+  local({
+  i=i
+  choo <- as.character(B$choice[i])
+  subset <- inv_pls[!is.na(inv_pls[,choo]) & inv_pls$cond=="hc",c("strain",choo)]
+  p <- ggplot(data=subset, aes(x = strain, y=subset[,2], fill=strain)) + geom_boxplot(outlier.alpha=0) + geom_jitter(width=0.2,height=0, size=0.5, shape=16) + ylab(parse(text=B$yax[i])) + xlab("") + guides(fill=FALSE) + scale_x_discrete(labels=c("WT","CD19-/-")) + theme_bw() + theme(axis.text=element_text(size=8), axis.title=element_text(size=10)) + scale_fill_manual(values=c("light grey","dark green")) 
+  print(i)
+  print(p)
+  p[[i]] <<- p
+  })
+
+g <- do.call(grid.arrange,c(p, nrow=1))
+save_plot(filename = "apollo_inv_abund_men_strain_bcells.pdf", g, path=here("pics"), base_width=2, base_height=2)
+```
+
+```{r}
+
+sessionInfo()
+
+```

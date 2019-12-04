@@ -1,0 +1,218 @@
+---
+title: "R Notebook"
+editor_options:
+  chunk_output_type: console
+---
+
+Generate counts table and do DE analysis
+Makes volcano plot for DE genes
+
+```{r}
+library(here)
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+library(vsn)
+
+load(file = paste0(here::here("res/"),"apollo_txi_counts.R"))
+load(paste0(here::here("res/"),"tx2gene.RData"))
+samples <- read.csv("/Users/mary/dataraw/bulkrnaseq/20190408_cd19_nih_bulk_rnaseq/samples.txt", header=F)
+```
+
+## Get gene symbols from ensembl ID
+```{r}
+library(biomaRt)
+mouse <- useMart("ensembl", dataset="mmusculus_gene_ensembl")
+
+m <- getBM(attributes=c("external_gene_name", "ensembl_gene_id"), mart=mouse) 
+
+# Get ENS equivalent
+transcript.matr <- txitranscripts$counts
+rownames(transcript.matr) <- gsub("[.].*", "", rownames(transcript.matr))
+transcript.matr %<>% as.data.frame()
+transcript.matr$ensgene <- NA
+transcript.matr$ensgene <- tx2gene$ensgene[match(rownames(transcript.matr),tx2gene$enstranscript)]
+
+# Now get gene symbol equivalent
+transcript.matr$external_gene_name <- m$external_gene_name[match(transcript.matr$ensgene, m$ensembl_gene_id)]
+
+# Genes in my counts dataset as now defined
+geneSymbol <- m$external_gene_name[match(rownames(txi$counts), m$ensembl_gene_id)] 
+length(geneSymbol) 
+
+```
+
+### Collapse ENS IDs over equivalent genes 
+Each gene will be aligned to the ensembl gene id but there can be multiple ensg id for the same gene.
+```{r}
+
+# Problem: some unique ENS genes map to same gene symbols
+table(geneSymbol) %>% table
+
+# Add the gene symbol as a column then sum counts for each gene
+new.expr.table <- data.frame(symbol = factor(geneSymbol, levels=unique(geneSymbol)), txi$counts)
+
+# Now drop the genes without external gene name
+table(is.na(new.expr.table$symbol)) # 288 NAs
+new.expr.table %<>% .[!is.na(.$symbol),]
+dim(new.expr.table) 
+
+new.expr.table %<>% as_tibble %>% group_by(symbol) %>% summarise_all(.funs=sum) %>% as.data.frame 
+
+row.names(new.expr.table) <- new.expr.table$symbol
+any(duplicated(rownames(new.expr.table)))==FALSE # Check all now unique
+new.expr.table <- new.expr.table[,-1]
+
+```
+
+
+## Input data and prepare for DESeq
+```{r}
+
+# Now round to integers for DESeq
+new.expr.table <- round(new.expr.table)
+
+sampleTable <- data.frame(
+  cond = factor(c("cd19", "wt","wt","cd19","wt","wt","cd19","wt","cd19","cd19","cd19","wt"), levels=c("wt","cd19"), ordered=F),
+  RNA = factor(rep("good_yield",nrow(samples)), levels=c("good_yield","low_RNA"), ordered = F)
+  )
+rownames(sampleTable) <- dplyr::pull(samples)
+
+# Samples where RNA too low on bioanalyzer
+sampleTable["MH01","RNA"] <- "low_RNA"
+sampleTable["MH02","RNA"] <- "low_RNA"
+sampleTable["MH09","RNA"] <- "low_RNA"
+
+# Reorder sample table and new.expr.table
+sampleTableOrd <- sampleTable[order(sampleTable$cond),]
+new.expr.table <- new.expr.table[,order(sampleTable$cond)]
+
+```
+
+
+## DEseq excluding the poor quality RNA samples. 
+Choose a gene expression filter
+```{r}
+library(DESeq2)
+lows <- rownames(sampleTableOrd[sampleTableOrd$RNA=="low_RNA",])
+new.expr.table.goodsamples <- new.expr.table %>% dplyr::select(-lows)
+sampleTableOrd.goodsamples <- sampleTableOrd[!rownames(sampleTableOrd) %in% lows,]
+
+dds <- DESeqDataSetFromMatrix(
+  new.expr.table.goodsamples, 
+  sampleTableOrd.goodsamples,
+  ~cond
+  )
+
+# Filter to remove those with almost no expression. 
+(x <- round(0.8*(nrow(dds@colData)))) # x = 7
+keep <- rowSums(counts(dds)<5) < x # i.e. Only keep if low counts (<5 reads) in <~80% of samples 
+# Very loose filtering - independent filtering will be applied later by DESeq2
+
+dim(dds) 
+dds <- dds[keep,]
+dim(dds) 
+
+dds <- DESeq(dds, betaPrior = TRUE) # i.e. old-style DESeq
+resultsNames(dds)
+
+# Add Entrez info 
+library(org.Mm.eg.db)
+tmp <- mapIds(org.Mm.eg.db,
+                     keys=row.names(dds),
+                     column="ENTREZID",
+                     keytype="SYMBOL",
+                     multiVals="first")
+
+# Remake orthologs table in case not made above
+if (!exists("orthologs")){
+  human = useMart("ensembl", dataset = "hsapiens_gene_ensembl") 
+  orthologs <- getLDS(attributes="external_gene_name", filters = "external_gene_name", values=row.names(dds), mart=mouse, attributesL="hgnc_symbol", martL=human, verbose = FALSE, uniqueRows = FALSE, bmHeader=TRUE) 
+  colnames(orthologs) <- c("mouse","human") 
+}
+
+# Use orthologs table generated above
+featureData <- data.frame(
+  entrezgene=tmp, 
+  external_gene_name=rownames(dds),
+  ortholog=orthologs$human[match(rownames(dds), orthologs$mouse)]
+  )
+mcols(dds) <- DataFrame(mcols(dds), featureData)
+mcols(dds)
+
+# Build results table for p=0.05
+res.05 <- results(dds, contrast=c("cond","cd19","wt"), alpha=0.05) # Important to specify alpha here so that the independent filtering is done correctly. 
+summary(res.05) 
+res.05$entrezgene <- mcols(dds)$entrezgene
+res.05$ortholog <- mcols(dds)$ortholog
+res.05$external_gene_name <- mcols(dds)$external_gene_name
+
+res.05.Ordered <- res.05[order(res.05$pvalue),]
+signif.05 <- res.05.Ordered[which(res.05.Ordered$padj<0.05),] %>% as.data.frame() %>% dplyr::select(log2FoldChange,padj,stat,entrezgene,ortholog, external_gene_name)
+
+# Inspect top results
+print(signif.05)
+
+```
+
+## Volcano plot
+```{r}
+
+resdata <- merge(as.data.frame(res.05), as.data.frame(counts(dds, normalized=TRUE)), by="row.names", sort=FALSE) # Normalized = TRUE or FALSE doesn't make a difference here because Log fold change already calculated by this stage anyway.
+names(resdata)[1] <- "Gene"
+head(resdata[order(resdata$padj),])
+res2 <- resdata[!is.na(resdata$padj),]
+res2 = mutate(res2, sig=ifelse(res2$padj<0.05, "FDR<0.05", "Not Sig"))
+rownames(res2) <- res2$Gene
+
+# Show genes with padj<0.05 and lFC>=0.5
+show <- res2 %>% 
+  dplyr::filter(padj<0.05) %>% 
+  dplyr::filter(abs(log2FoldChange)>=1)
+
+# Need to rename the genes starting with number otherwise parse doesn't work in labels
+show$Gene %>% sort
+show$Gene[show$Gene=="1110002E22Rik"] <- "`1110002E22Rik`"
+show$Gene[show$Gene=="9630028B13Rik"] <- "`9630028B13Rik`"
+show$Gene[show$Gene=="1110002E22Rik"] <- "`1110002E22Rik`"
+
+library(ggrepel)
+p = ggplot(res2, aes(res2$log2FoldChange, -log10(res2$pvalue))) +
+  geom_point(aes(col=sig, size=sig)) +
+  scale_color_manual(values=c("red", "black")) +
+  scale_size_manual(values=c(3,2)) +
+  geom_text_repel(data=show, aes(x=log2FoldChange, y=-log10(pvalue),label=as.character(Gene)),min.segment.length = unit(0, "lines"), size=5,segment.colour = "black", parse=TRUE, box.padding=unit(0.4,"lines")) +
+  xlab("log2(Fold Change)") +
+  ylab("-log10 (p-value)") +
+  theme_bw() +
+  theme(panel.background = element_rect(colour="white"), legend.justification=c(0,0), legend.position=c(0,0), legend.background = element_rect(color="black", fill="white",size=.5, linetype="solid"), legend.text=element_text(size=15), axis.text = element_text(size=15), axis.title = element_text(size=15)) +
+  expand_limits(x=c(-1.5,1.5)) +
+  labs(col=NULL) +
+  guides(size=FALSE, col=guide_legend(keywidth=0.05,keyheight=1.5)) +
+  geom_vline(xintercept=0, linetype="dashed") 
+p
+ggsave(p,path=here::here("pics/"),filename="apollo_volcano_meninges_dge_cd19_vs_wt_goodsamples.pdf",width=6,height=6)
+
+print(show)
+print(signif.05)
+
+```
+
+
+### VST for visualizations, then save for subsequent files
+```{r}
+library(DESeq2)
+vsd <- vst(dds, blind=FALSE)
+
+vsn::meanSdPlot(assay(vsd), ranks = FALSE) # VST for visualization purposes
+
+# Number of samples per group once remove lowRNAseq samples
+dds$cond %>% table
+
+save(list=c("vsd","dds","res.05","signif.05","sampleTableOrd.goodsamples"), file = paste0(here::here("res/"),"apollo_deseq_out_goodsamples.R"))
+```
+
+
+```{r}
+sessionInfo()
+```

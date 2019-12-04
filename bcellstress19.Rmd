@@ -1,0 +1,185 @@
+---
+title: "CD19-/- behaviour"
+output:
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: console
+---
+
+Makes Figure 5F and S9H
+Littermate CD19-/- vs. WT behaviour
+
+```{r}
+library(readxl)
+library(ggplot2)
+library(here)
+library(tidyverse)
+library(magrittr)
+library(reshape2)
+library(ggsignif)
+library(ggfortify)
+```
+
+Load data
+```{r}
+
+f2beh <- read_excel(here("data/raw/sk/cd19_behaviour/CD19 F2 master sheet v2.xlsx"), sheet="lynall")
+f2beh$name <- paste("m",f2beh$name,sep="")
+f2beh$coh <- factor(f2beh$coh)
+f2beh$strain <- factor(f2beh$strain, levels=c("wt","cd19"), ordered=TRUE)
+
+outcomes_pre <- c("LD_x_pre","OF_dis_pre")
+outcomes_post <- c("LD_x_10","OF_dis_10")
+outcomes <- c(outcomes_pre,outcomes_post)
+
+f2beh[,outcomes] <- sapply(f2beh[,outcomes], as.numeric)
+sample_n(f2beh,6)
+```
+
+Number of cohorts
+```{r}
+print("These are the cohorts which generated the CD19 littermate control data")
+unique(f2beh$coh)
+```
+
+```{r}
+f2beh$OF_dis_10 <- f2beh$OF_dis_10/1000
+f2beh$OF_dis_pre <- f2beh$OF_dis_pre/1000 # Make metres
+
+# Animal ages
+f2beh$age_at_pheno <- as.numeric(f2beh$age_at_pheno)/7 # convert to weeks
+
+# There are young and old animals in different cohorts
+ggplot(f2beh,aes(x=strain,y=age_at_pheno)) + geom_boxplot(outlier.shape = NA) + geom_jitter()
+range(f2beh$age_at_pheno, na.rm=TRUE) # i.e. 7-28 weeks old
+
+print("Is there a difference in age between the strains across all animals? No") # 
+wilcox.test(f2beh %>% filter(strain=="wt") %>% pull("age_at_pheno"),
+            f2beh %>% filter(strain=="cd19") %>% pull("age_at_pheno"))
+```
+
+Plot and statistics for pre and post-stress behavioural results
+```{r}
+# LD crosses baseline
+fit_ldpre <- lm(LD_x_pre ~ strain + coh, data=f2beh)
+summary(fit_ldpre)
+# Non-sig
+
+# LD crosses linear model post
+fit_ldpost <- lm(LD_x_10 ~ strain + coh, data=f2beh)
+summary(fit_ldpost)
+# Non-sig
+
+# OF dis linear model pre
+fit_ofpre <- lm(OF_dis_pre ~ strain + coh, data=f2beh)
+summary(fit_ofpre) # p = 0.0147 for strain
+
+# OF dis linear model post SD
+fit_ofpost <- lm(OF_dis_10 ~ strain + coh, data=f2beh)
+summary(fit_ofpost) # Non-sig
+
+```
+
+Now load the extra baseline open field behavioural data
+```{r}
+f2replication <- read_excel(here("data/raw/sk/cd19_behaviour/MELB CD19 OF Master-sheet.xlsx"), sheet="tidy", skip = 1)
+
+# Don't use the heterozygotes
+f2replication %<>% filter(!strain=="Het")
+
+f2replication$strain %<>% forcats::fct_recode(wt="WT",cd19="KO")
+f2replication$strain %<>% forcats::fct_relevel("wt","cd19")
+
+# Uniquify cohort names
+f2replication$coh %<>% paste0("D",.)
+f2replication$coh %<>% as.factor
+```
+
+
+```{r}
+# Check numbers for post-stress behaviour. 14 wt and 13 cd19 for all
+table(is.na(f2beh$OF_dis_10), f2beh$strain)
+table(is.na(f2beh$LD_x_10), f2beh$strain)
+```
+
+Combine all cohorts for baseline open field stats 
+```{r}
+of_all <- bind_rows(f2beh, f2replication)
+of_all$coh %<>% as.factor
+
+# Unbalanced cohorts
+table(of_all$strain, of_all$coh)
+
+# Filter out cohort G4 as both animals are KO so can't distinguish strain effect from batch effect
+of_all %<>% filter(!coh=="G4")
+of_all$coh %<>% droplevels
+
+table(of_all$strain, of_all$coh)
+```
+
+Stats for Figure S9H
+```{r}
+
+fit <- lm(OF_dis_pre ~ strain + coh, data=of_all)
+autoplot(fit) 
+summary(fit) # p(strain) = 0.01 
+
+# Call:
+# lm(formula = OF_dis_pre ~ strain + coh, data = of_all)
+# 
+# Residuals:
+#     Min      1Q  Median      3Q     Max 
+# -5.5557 -1.8791 -0.1892  2.4874  6.9095 
+# 
+# Coefficients:
+#             Estimate Std. Error t value Pr(>|t|)    
+# (Intercept)  14.4271     1.2209  11.816 1.38e-13 ***
+# strain.L     -1.8896     0.7044  -2.683 0.011193 *  
+# cohD2         5.5880     1.8885   2.959 0.005586 ** 
+# cohD3         5.7082     2.5866   2.207 0.034180 *  
+# cohD4         1.2570     2.2380   0.562 0.578016    
+# cohG1        -1.3452     1.6705  -0.805 0.426263    
+# cohG2         1.3566     1.7966   0.755 0.455401    
+# cohG3         0.2932     2.2380   0.131 0.896530    
+# cohG5         6.9692     1.8960   3.676 0.000811 ***
+# cohG6         2.4639     1.8960   1.300 0.202506    
+# ---
+# Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+# 
+# Residual standard error: 3.225 on 34 degrees of freedom
+# Multiple R-squared:  0.5502,	Adjusted R-squared:  0.4311 
+# F-statistic: 4.621 on 9 and 34 DF,  p-value: 0.0004918
+
+# Get sample numbers
+table(of_all$strain) # 22 and 22 each group
+table(of_all$coh) # 9 cohorts of mice
+
+```
+
+
+Age range
+```{r}
+f2beh$age_at_pheno %>% sort # 7 - 28 weeks
+f2replication # inspect sheet: age range = 8=10 weeks
+```
+
+Figure S9H
+Plot behavioural baseline open field data for n=22 vs. n=22
+```{r}
+
+p1 <- ggplot(of_all,aes(x=strain, y=OF_dis_pre, fill=strain)) + geom_boxplot(outlier.shape = NA) + geom_jitter(width = 0.2,shape=16)  + theme_bw() + scale_fill_manual(values=c("light grey","dark green"), labels=c("WT","CD19-/-")) + ylab("") + ggtitle("Open field distance (m)") + 
+xlab("") + theme(legend.title = element_blank()) + guides(fill=FALSE) + expand_limits(y=c(0, 30))
+p1
+
+g <- cowplot::plot_grid(p1,align="hv",ncol=1)
+cowplot::save_plot(filename=here("pics/apollo_cd19_baseline_OF_dis.pdf"),plot=g,base_width=2.2,base_height=2.5)
+
+
+```
+
+```{r}
+
+sessionInfo()
+
+```

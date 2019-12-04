@@ -1,0 +1,93 @@
+---
+title: "RNAseq salmon"
+output: html_document
+---
+
+Run in bash not [R]
+
+### Salmon setup
+```{bash, include=FALSE}
+
+mypython3 # alias to get into conda environment
+conda install -c conda-forge jemalloc
+conda install -c anaconda boost
+conda install -c bioconda salmon
+
+cd /Users/mary/data/exp030_nih/data/raw/cd19_rnaseq/
+```
+
+### Get transcript counts using Salmon
+```{bash}
+# Prepare fasta file for salmon, given transcript names
+awk '{split($0,a,"|"); if(a[1]) print a[1]; else print; }' gencode.vM21.transcripts.fa > gencode.vM21.transcripts.transcriptsonly.fa
+
+head gencode.vM21.transcripts.transcriptsonly.fa 
+deactivate # leave conda environment
+
+```
+
+### Now make salmon index
+```{bash}
+# build index
+cd /Users/mary/data/exp030_nih/data/raw/cd19_rnaseq
+#gzip gencode.vM21.transcripts.fa # make it .fa.gz
+salmon index -t gencode.vM21.transcripts.transcriptsonly.fa -i vM21.transcripts.index
+```
+
+
+### Now concatenate the fastq files (all are across 4 lanes)
+```{bash}
+cd /Users/mary/dataraw/bulkrnaseq/20190408_cd19_nih_bulk_rnaseq/Miles_Herkenham_04042019-126734611/FASTQ_Generation_2019-04-05_04_19_58Z-172344788/
+  
+find . -maxdepth 1 -type d | cut -c 3-6 | sort | uniq > samples.txt # Get unique samples names (each has 4 folders)
+
+# Then manually removed top blank line in directory
+
+# Generate the list of relevant files (i.e. those in a directory named for the sample)
+while read SAMPLE; do filelist=`ls $SAMPLE*/*.gz`; echo $filelist; c; done < samples.txt # Check works
+
+# Create folder for each NOT within this folder
+mkdir ../concat
+while read SAMPLE; do mkdir ../concat/$SAMPLE; done < samples.txt
+
+# Now alter the above to concatenate
+while read SAMPLE; do filelist=`ls $SAMPLE*/*.gz`; cat $filelist > ../concat/$SAMPLE/${SAMPLE}_cat.fastq.gz; done < samples.txt
+
+```
+
+### Now run salmon in mapping-based mode (requires index)
+```{bash}
+mypython3
+
+cd /Users/mary/dataraw/bulkrnaseq/20190408_cd19_nih_bulk_rnaseq/Miles_Herkenham_04042019-126734611/concat/
+
+mkdir ../quants
+
+for dir in *
+do
+samp=`basename ${dir}`
+if [ -f "../quants/${samp}_quant/quant.sf" ]; then
+  echo "${samp}_quant exists already, skipping"
+else
+  echo "Processing sample ${samp}"
+  salmon quant -i /Users/mary/data/exp030_nih/data/raw/cd19_rnaseq/vM21.transcripts.index/ -l A \
+    -r ${dir}/*_cat.fastq.gz \
+    -p 64 \
+    -o ../quants/${samp}_quant \
+    --validateMappings --gcBias --reduceGCMemory --posBias
+fi
+done
+
+```
+
+Run the following in [R]
+### Make transcript to gene table
+```{r}
+library(magrittr)
+library(GenomicFeatures)
+txMm <- makeTxDbFromBiomart(dataset="mmusculus_gene_ensembl") # Slow (7 mins)
+k <- keys(txMm, keytype = "TXNAME")
+tx2gene <- select(txMm, keys=k, keytype = "TXNAME", columns=c("GENEID","TXNAME","TXTYPE"))
+colnames(tx2gene) <- c("enstranscript","ensgene","TXTYPE")
+save(tx2gene, file = paste0(here::here("res/"),"tx2gene.RData"))
+```

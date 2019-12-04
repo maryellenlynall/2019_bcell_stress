@@ -1,0 +1,209 @@
+---
+title: "R Notebook"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+Splenic count data
+- Figure 2B (effects of stress)
+- Figure 5B (effects of CD19 deficiency)
+- Figure S9D (effects of stress in CD19 deficiency)
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(here)
+library(reshape2)
+library(corrplot)
+library(gridExtra)
+library(cowplot)
+library(DESeq2)
+
+load(here("/res/data_bred.R"))
+
+countdata <- c("ly_plasma","ly_IgDpos","ly_IgDneg","ly_cytotoxic","ly_helper","ly_nk","ly_nkt","my_cdcs_comb_cd11bpos","my_cdcs_comb_cd11bneg","my_pDCs","my_neutrophils","my_f4_80_macs","my_inflamm_mono","my_Ly6Cpos_CD11b_neg") 
+
+smedata <- paste("sme_",countdata,sep="") # Use the splenic mass estimates
+
+counts_good_names_spl <- c("Plasma~cells","IgD^{'+'}~'B cells'","IgD^{'-'}~'B cells'","T[cytotoxic]","T[helper]","NK","NKT","CD11b^{'+'}~cDCs","CD11b^{'-'}~cDCs","pDCs","Neutrophils","F4*'/'*80^{'+'}~macrophages","Ly6C^{hi}~'mono'","Ly6C^{hi}*CD11b^{neg}") 
+
+```
+
+```{r}
+# Subset to the cohorts which have splenic flow data
+subset_spl <- data_bred[data_bred$coh %in% c("r3","r5","r6","r7","r8"),]
+
+# How many per condition?
+length(subset_spl[subset_spl$strain=="cd19" & subset_spl$cond=="csd","name"]) 
+# 11 stressed CD19
+length(subset_spl[subset_spl$strain=="cd19" & subset_spl$cond=="hc","name"])
+# 8 healthy CD19
+length(subset_spl[subset_spl$strain=="wt" & subset_spl$cond=="csd","name"]) 
+# 11 stressed wt
+length(subset_spl[subset_spl$strain=="wt" & subset_spl$cond=="hc","name"])
+# 10 healthy wt
+
+```
+
+# DESeq
+```{r}
+count_sp <- subset_spl[,smedata] 
+subs <- rownames(na.omit(count_sp))
+counts <- count_sp
+counts <- t(na.omit(as.matrix(counts)))
+counts <- apply(counts,2, function (x) round(x, digits=0)) # Make all counts integer
+
+colnames(counts) <- data_bred[subs,"name"]
+condition <- relevel(factor(subset_spl[subs,"cond"], ordered=FALSE), ref="hc") # DEseq won't work if ordered
+strain <- relevel(factor(subset_spl[subs,"strain"], ordered=FALSE), ref="wt")
+cohort <- factor(subset_spl[subs,"coh"],ordered=FALSE)
+
+# Create a coldata and instantiate the DESeqDataSet. 
+coldata <- data.frame(row.names=colnames(counts), condition, strain, cohort) 
+
+dds <- DESeqDataSetFromMatrix(countData=counts, colData=coldata, design= ~ cohort + strain + condition + strain:condition) 
+dds
+
+```
+
+No library size correction, as we are using absolute counts and there are significant changes in splenic mass with condition (see this chunk), so correcting for median count would introduce bias.
+```{r}
+# For demonstration - these are the size factors library size correction would produce for the splenic counts
+dds_norm <- DESeq(dds) 
+# Create size factors = 1 for all counts
+SFs <- seq(length.out=ncol(dds), from=1, to=1) 
+sizeFactors(dds) <- SFs
+dds_fixed <- DESeq(dds)
+
+SF <- sizeFactors(dds_norm) 
+subset_spl <- merge(subset_spl, data.frame(name=names(SF),sp_size_facs=SF), by="name")
+ggplot(aes(y=sp_size_facs, x=ly_live, color=cond, shape=strain), data=subset_spl) + geom_point() + scale_color_manual(values=c("red", "black"))
+rs <- lm(subset_spl$sp_size_facs ~ strain + cond + coh, data=subset_spl, na.action=na.omit)
+summary(rs) # As we expect, stress is associated with a change in library size (because the spleen enlarges following chronic stress)
+```
+
+
+```{r}
+# Save regularized log transformation for clustering/heatmaps, etc
+rld <- rlogTransformation(dds_fixed) 
+spl_rld <- assay(rld)
+save(spl_rld, file=here("res/spl_rld.R")) 
+save(counts_good_names_spl,file=here("res/counts_good_names_spl.R"))
+```
+
+```{r}
+# Get differential expression results 
+resultsNames(dds_fixed)
+```
+
+## Effect of stress in WT animals
+Figure 2B
+```{r}
+res <- results(dds_fixed,name="condition_csd_vs_hc")
+resdata <- merge(as.data.frame(res), as.data.frame(counts(dds_fixed, normalized=TRUE)), by="row.names", sort=FALSE)
+names(resdata)[1] <- "Subset"
+head(resdata)
+
+library(ggrepel) 
+
+res2 = mutate(resdata, sig=ifelse(resdata$padj<0.05, "FDR<0.05", "Not Sig"))
+rownames(res2) <- counts_good_names_spl 
+
+p = ggplot(res2, aes(res2$log2FoldChange, -log10(res2$pvalue))) +
+  geom_point(aes(col=sig, size=sig)) +
+  scale_color_manual(values=c("red", "black")) +
+  scale_size_manual(values=c(3,2)) +
+  xlab("log2(Fold Change)") +
+  ylab("-log10 (p-value)") +
+  theme_bw() +
+  theme(legend.justification=c(0,0), legend.position=c(0,0), legend.background = element_rect(color="grey", fill="white",size=.5, linetype="solid"), legend.text=element_text(size=20), axis.text = element_text(size=20), axis.title = element_text(size=20)) +
+  xlim(-3,3) +
+  #ylim(0,5) +
+  labs(col=NULL) +
+  guides(size=FALSE, col=guide_legend(keywidth=0.1,keyheight=1.5)) +
+  geom_vline(xintercept=0, linetype="dashed")
+p
+
+p = p + geom_text_repel(data=dplyr::filter(res2, res2$padj<0.05), aes(x=dplyr::filter(res2, res2$padj<0.05)[,"log2FoldChange"],y= -log10(dplyr::filter(res2, res2$padj<0.05)[,"pvalue"]),label=rownames(res2[res2$padj<0.05,])),min.segment.length = unit(0, "lines"), size=7,segment.colour = "black", parse=TRUE, box.padding=unit(0.4,"lines")) 
+p
+ggsave(p,path=here("pics/"),filename="apollo_volcano_counts_SPL_MASS_ADJ_stress_hc.pdf",width=6,height=7)
+
+res2_spl_stress_in_wt <- res2
+
+```
+
+## Effect of strain
+Figure 5B
+```{r}
+res <- results(dds_fixed,name="strain_cd19_vs_wt")
+resdata <- merge(as.data.frame(res), as.data.frame(counts(dds_fixed)), by="row.names", sort=FALSE)
+names(resdata)[1] <- "Subset"
+head(resdata)
+
+res2 = mutate(resdata, sig=ifelse(resdata$padj<0.05, "FDR<0.05", "Not Sig"))
+rownames(res2) <- counts_good_names_spl
+
+p = ggplot(res2, aes(res2$log2FoldChange, -log10(res2$pvalue))) +
+  geom_point(aes(col=sig, size=sig)) +
+  scale_color_manual(values=c("red", "black")) +
+  scale_size_manual(values=c(3,2)) +
+  xlab("log2(Fold Change)") +
+  ylab("-log10 (p-value)") +
+  theme_bw() +
+  theme(legend.justification=c(0,0), legend.position=c(0,0), legend.background = element_rect(color="grey", fill="white",size=.5, linetype="solid"), legend.text=element_text(size=20), axis.text = element_text(size=20), axis.title = element_text(size=20)) +
+  xlim(-3,3) +
+  #ylim(0,12.5) +
+  labs(col=NULL) +
+  guides(size=FALSE, col=guide_legend(keywidth=0.1,keyheight=1.5)) +
+  geom_vline(xintercept=0, linetype="dashed")
+p
+
+p = p + geom_text_repel(data=dplyr::filter(res2, res2$padj<0.05), aes(dplyr::filter(res2, res2$padj<0.05)[,"log2FoldChange"], -log10(dplyr::filter(res2, res2$padj<0.05)[,"pvalue"]),label=rownames(res2[res2$padj<0.05,])),min.segment.length = unit(0, "lines"), size=7,segment.colour = "black", parse=TRUE, box.padding=unit(0.4,"lines")) 
+p
+ggsave(p,path=here("pics/"),filename="apollo_volcano_counts_SPL_MASS_ADJ_cd19_wt.pdf",width=6,height=6)
+
+res2_spl_strain_in_hc <- res2
+
+```
+
+## Effects of stress in CD19-/- animals
+Figure S9D
+```{r}
+rm(res)
+res <- results(dds_fixed,contrast=list(c("condition_csd_vs_hc","straincd19.conditioncsd")))
+resdata <- merge(as.data.frame(res), as.data.frame(counts(dds_fixed)), by="row.names", sort=FALSE)
+names(resdata)[1] <- "Subset"
+head(resdata)
+
+res2 = mutate(resdata, sig=ifelse(resdata$padj<0.05, "FDR<0.05", "Not Sig"))
+rownames(res2) <- counts_good_names_spl
+
+p = ggplot(res2, aes(res2$log2FoldChange, -log10(res2$pvalue))) +
+  geom_point(aes(col=sig, size=sig)) +
+  scale_color_manual(values=c("red", "black")) +
+  scale_size_manual(values=c(3,2)) +
+  xlab("log2(Fold Change)") +
+  ylab("-log10 (p-value)") +
+  theme_bw() +
+  theme(legend.justification=c(0,0), legend.position=c(0,0), legend.background = element_rect(color="grey", fill="white",size=.5, linetype="solid"), legend.text=element_text(size=20), axis.text = element_text(size=20), axis.title = element_text(size=20)) + 
+  xlim(-2.5,2.5) +
+  #ylim(0,12.5) +
+  labs(col=NULL) +
+  guides(size=FALSE, col=guide_legend(keywidth=0.1,keyheight=1.5)) +
+  geom_vline(xintercept=0, linetype="dashed")
+p
+
+p = p + geom_text_repel(data=dplyr::filter(res2, res2$padj<0.05), aes(dplyr::filter(res2, res2$padj<0.05)[,"log2FoldChange"], -log10(dplyr::filter(res2, res2$padj<0.05)[,"pvalue"]),label=rownames(res2[res2$padj<0.05,])),min.segment.length = unit(0, "lines"), size=7,segment.colour = "black", parse=TRUE, box.padding=unit(0.4,"lines")) 
+p
+ggsave(p,path=here("pics/"),filename="apollo_volcano_counts_SPL_MASS_ADJ_stress_in_cd19.pdf",width=6,height=6)
+
+res2_spl_stress_in_cd19 <- res2
+save(file=here("res/res2_spl.R"),res2_spl_stress_in_wt,res2_spl_strain_in_hc,res2_spl_stress_in_cd19)
+
+```
+
+```{r}
+sessionInfo()
+```
+

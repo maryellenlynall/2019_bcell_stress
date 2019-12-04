@@ -1,0 +1,331 @@
+---
+title: "de view"
+output: html_document
+---
+
+View differential expression results
+
+Makes:
+- Figure 4C, 4D, 4E
+- Figure S8A, S8B, S8C, S8D
+
+```{r}
+library(ggplot2)
+library(kableExtra) 
+library(RColorBrewer)
+library(here)
+library(scran) 
+library(scater)
+library(magrittr)
+source(here::here("/scripts/functions_lynall.R"))
+```
+
+```{r}
+
+load(file = paste0(here::here("res/"),"sc_deout_leiden_0_perc0.15.R"))
+combi <- readRDS(paste0(here::here("res/"),"combi_clustered_leiden_annotated.RDS"))
+
+log2norm_thresh <- 0
+perc_thresh <- 0.15
+
+```
+
+Add info on percentage mito and ribo
+```{r}
+mito.genes <- grep("^mt-", rowData(combi)$Symbol)
+colData(combi)$perc_mito <- Matrix::colSums(counts(combi)[mito.genes, ]) / Matrix::colSums(counts(combi))
+
+riboprot.genes <- grep("^Rp[sl][[:alnum:]]",rowData(combi)$Symbol)
+colData(combi)$perc_riboprot <- Matrix::colSums(counts(combi)[riboprot.genes, ]) / Matrix::colSums(counts(combi))
+```
+
+Drop ambient genes and erythrocytes as before
+```{r}
+# Repeated from 010
+load(file=here::here("res/amb_to_drop.R"))
+sce <- combi[!rowData(combi)$ID %in% amb_to_drop,]
+sce <- sce[,!sce$Annotation == "Erythrocytes"]
+```
+
+## Differential expression
+```{r}
+thresh_fdr <- 0.1
+diffs <- lapply(deout, function(x){
+  tmp <- x[x$fdr_p_val<thresh_fdr,]
+  })
+diffs <- dplyr::bind_rows(diffs)
+# arranged by significance for each cytokine
+diffs %>% dplyr::arrange(gene, fdr_p_val) %>% dplyr::select(cluster, gene, LFC, fdr_p_val)
+
+# Heatmap for the B cells
+bs <- diffs %>% dplyr::filter(cluster %in% c("Pro-pre B cells 1","Pro-pre B cells 2","Mature B cells 1","Mature B cells 2"))
+
+(towrite <- bs %>% 
+  dplyr::filter(fdr_p_val<thresh_fdr) %>% 
+  dplyr::arrange(gene, fdr_p_val) %>% 
+  dplyr::select(cluster, gene, LFC, fdr_p_val))
+
+# HEATMAP
+p_bs <- ggplot(towrite, aes(x=cluster, y=gene, fill=LFC)) + geom_tile() + scale_fill_gradient2(low = "#053061", mid = "white",
+  high = "dark red", midpoint = 0) + ggtitle("B cell clusters:\nsignificantly different in\nstress at p(adj)<0.1") + ylab("") + xlab("") + theme_bw() + theme(axis.text.x=element_text(angle=90,hjust=1, vjust=0.5)) 
+
+ggsave(p_bs, filename = paste0(here::here("pics/"),"sc_de_b_cells",log2norm_thresh,"_perc",perc_thresh,"_fdr",thresh_fdr,".pdf"), width=3.5,height=8)
+
+```
+
+## Just mature B cells heatmap. 
+```{r}
+thresh_fdr <- 0.1
+thresh_lfc <- 0.2
+
+bs <- dplyr::bind_rows(out_b1, out_b2)
+
+forfig <- bs %>% dplyr::filter(fdr_p_val<thresh_fdr) %>% dplyr::filter(absLFC>thresh_lfc) %>% dplyr::arrange(LFC)
+
+# Genes to plot for the MHCII(hi) cluster
+bmhciigenes <- out_b2 %>% dplyr::filter(fdr_p_val<thresh_fdr) %>% dplyr::filter(absLFC>thresh_lfc) %>% dplyr::arrange(LFC) %>% dplyr::select(gene) %>% unlist %>% as.character
+
+# And save this list of DE genes
+write.table(forfig, file=paste0(here("res/"),"mature_b2_de",log2norm_thresh,"_perc",perc_thresh,"_fdr",thresh_fdr,"_lfc",thresh_lfc,".csv"), sep="\t", row.names = F, quote=F)
+
+```
+
+Figure S8B 
+```{r}
+# devtools::install_github("zktuong/ktplots") # For plotting function geneDotPlot
+library(ktplots) # Note not currently compatible with tidyr dev version
+sce2 <- sce[,sce$Annotation %in% c("Mature B cells 1","Mature B cells 2")]
+p <- geneDotPlot(scdata = sce2, # object
+	idents = "Annotation", # a vector holding the cell-cluster ID/assignment or some other vector such as those found in the metadata seurat_object$split
+	genes = bmhciigenes, # genes to plot
+	split.by = 'cond', # column name in the meta data that you want to split the plotting by. If not provided, it will just plot according to idents
+	scaled=TRUE,
+	save.plot = FALSE,
+	pct.threshold = 0.05) 
+p
+ggsave(p, filename = paste0(here::here("pics/"),"apollo_mhcii_de_genes_mean_and_percs.pdf"), width=3.8, height=6)
+
+# Check
+plotExpression(sce2, features = "Lcn2",x = 'cond') + facet_wrap(~ sce2$Annotation) + stat_summary(fun.y=mean, colour="darkred", geom="point", shape=18, size=3,show_guide = FALSE)
+
+```
+
+Check stress genes DE significance
+```{r}
+features=c("Fos","Jun","Jund","Junb") # Fosb not expressed enough to do differential expression
+bs %>% filter(cluster %in% c("Mature B cells 1","Mature B cells 2")) %>% filter(gene %in% features)
+# Only sig is Junb in Mature B cells 2 (FDR p = 0.003)
+```
+
+FIGURE 4E
+Cytokines and chemokines relevant to single cell B cells
+```{r}
+
+# TOGETHER
+genes <- c("Il6",
+           "Tnf",
+           "Csf2", # GM-CSF
+           "Il10",
+           "Ebi3", # Half of IL-35
+           "Il12a",
+           "Ccr7",
+           "Cxcr4",
+           "Cxcr5"
+           )
+
+# Note, shows RAW not correceted p value
+p <- lynall_heatmap_clusters_lfc(deout=bs, clusters=unique(bs$cluster), genes=genes, title="B cell cytokines\nchemokines and receptors", keep_gene_order=TRUE)
+ggsave(p, filename = paste0(here::here("pics/"),"apollo_sc_de_b_cells_cyto_and_receptors_select.pdf"), width=5, height=4)
+
+```
+
+# B cell proportions for Figure S8A
+```{r}
+# Percent of B cells
+tmp <- sce[,sce$Annotation %in% c("Mature B cells 1","Mature B cells 2")]
+
+table(droplevels(tmp$Annotation), tmp$cond) %>% prop.table(margin=2) %>% "*"(100) %>% round(1) %>% kable(row.names = T) %>% kable_styling(bootstrap_options = "striped", full_width = FALSE)
+
+# Percent of single cells
+table(droplevels(sce$Annotation), sce$cond) %>% prop.table(margin=2) %>% .[c("Mature B cells 1","Mature B cells 2"),] %>% "*"(100) %>% round(1) %>% kable(row.names = T) %>% kable_styling(bootstrap_options = "striped", full_width = FALSE)
+
+# Fisher test for contingency of B cell type on condition
+fisher.test(table(droplevels(sce[,sce$Annotation %in% c("Mature B cells 1","Mature B cells 2")]$Annotation), sce[,sce$Annotation %in% c("Mature B cells 1","Mature B cells 2")]$cond))
+
+```
+
+
+# Cell phase proportions by condition for B cells
+Figure S8D
+```{r}
+tmp <- sce[,sce$Annotation %in% c("Mature B cells 1","Mature B cells 2")]
+
+propping <- table(tmp$cond, tmp$cell_cycle,droplevels(tmp$Annotation)) %>% 
+  prop.table(margin=c(1,3)) %>% 
+  reshape2::melt()
+colnames(propping) <- c("Condition","Cell_cycle_phase","Cell_type","proportion")
+
+p_props <- ggplot(data=propping) + 
+    geom_bar(aes(x=Condition, y=proportion, fill=Cell_cycle_phase), stat="identity") + 
+    xlab("") + ylab("") +# + theme(axis.text.x=element_text(angle=90,hjust=1, vjust=0.5))
+    ggtitle("Cell cycle phase") + 
+    scale_fill_manual(values=metadata(sce)$col_vector) + theme_bw() +
+  theme(legend.title = element_blank()) + facet_wrap(~Cell_type, ncol=7)
+p_props
+ggsave(p_props, filename = paste(here("pics"),"apollo_cell_cycle_phase_mature_b.pdf",sep="/"),width=4,height=3)
+
+```
+
+## Mitochondrial percentage for B cells
+Figure S8C
+```{r}
+library(ggsignif)
+ggplot(data.frame(colData(sce[,sce$Annotation %in% c("Mature B cells 1","Mature B cells 2")])), aes(x=cond, y=perc_mito, fill=cond)) + geom_boxplot(outlier.shape = NA) + facet_wrap(~Annotation) + geom_signif(test="wilcox.test", comparisons = list(c("HC","SD")), vjust=1.5, map_signif_level = function(x){paste0("p=",signif(x,1))}) + theme_bw() + scale_fill_manual(values=c("grey","red")) + guides(fill=FALSE) + xlab("") + ylab("% mitochondrial genes")
+ggsave(filename = here("pics/apollo_sc_perc_mito_b_mature.pdf"), width=3, height=3)
+
+```
+
+## Candidate terms approach:
+1) Autophagy. Reactome has 3 types, but subsumed within R-MMU-9612973
+2) Apoptosis. Reactome has R-MMU-109581
+3) Necrosis. Reactome has "R-MMU-5218859" Regulated necrosis.
+4) UPR. Reactome is R-MMU-381119
+5) Plasma cell differentiation
+
+```{r}
+
+forgsea <- out_b2
+forgsea %<>% dplyr::mutate(stat = sign(LFC)*-log10(p_val))
+forgsea %<>% dplyr::filter(!is.na(stat))
+geneList <- forgsea$stat # The Ranked genelist
+names(geneList) <- forgsea$gene
+geneList <- sort(geneList, decreasing = T)
+
+# Downloaded database of ensembl to pathways from:
+# https://reactome.org/download/current/Ensembl2Reactome_All_Levels.txt on 20190715
+reactome <- read.csv(here("/data/raw/reactome_download/Ensembl2Reactome_All_Levels.txt"), sep="\t", header=F)
+# Only select pathways of interest
+react <- list(
+  autophagy = reactome %>% dplyr::filter(V2=="R-MMU-9612973") %>% pull(V1),
+  apoptosis = reactome %>% dplyr::filter(V2=="R-MMU-109581") %>% pull(V1),
+  necrosis = reactome %>% dplyr::filter(V2=="R-MMU-5218859") %>% pull(V1),
+  upr = reactome %>% dplyr::filter(V2=="R-MMU-381119") %>% pull(V1)
+)
+
+term2gene <- data.frame(term = rep(names(react), sapply(react, length)), ens = unlist(react, use.names = F))
+
+# Get the symbol equivalents for those in dataset
+term2gene$gene <- rownames(sce)[match(term2gene$ens, rowData(sce)$ID)]
+term2gene$ens <- NULL
+term2gene %<>% na.omit 
+table(term2gene$term) 
+
+gseaout <- GSEA(geneList, TERM2GENE = term2gene, nPerm=5000, exponent=0, pvalueCutoff = 1, minGSSize=5) 
+head(gseaout) # Nil significant
+gseaout@result %>% dplyr::select("Description","NES", "p.adjust") %>% arrange(NES) 
+
+# Now GSEA for all reactome pathways
+react <- reactome %>% dplyr::filter(grepl("R-MMU-",V2))
+term2gene <- data.frame(term=react$V4, ens=react$V1)
+term2gene$gene <- rownames(sce)[match(term2gene$ens, rowData(sce)$ID)]
+term2gene$ens <- NULL
+term2gene %<>% na.omit 
+
+set.seed(12345)
+gseaout <- GSEA(geneList, TERM2GENE = term2gene, nPerm=10000, exponent=0, pvalueCutoff = 0.05) 
+head(gseaout) 
+gseaout@result %>% dplyr::select("Description","NES", "p.adjust") %>% arrange(NES) 
+
+# FIGURE 4D
+df <- gseaout@result %>% arrange(NES)
+df$ID %<>% factor(levels=unique(df$ID), ordered = T)
+# And plot
+p <- ggplot(df, aes(x = NES, y = ID, color=as.factor(sign(NES)))) + 
+        geom_point(size=4) + 
+        theme_bw(base_size = 14) +
+        scale_colour_manual(limits=c("-1","1"), values=c("dark blue","dark red"), labels=c("Decreased in stress","Increased in stress")) +
+        ylab(NULL) +
+        theme(legend.title = element_blank()) +
+        xlab("Normalized enrichment score") +
+        expand_limits(x=0) +
+        ggtitle("GSEA (Reactome) for DE genes\nin Mature B Cells 2 at p(adj)<0.05")
+p
+ggsave(p,path=here::here("pics/"),filename="apollo_sc_gsea_out_clusterprofilers_Reactome_mature_b_2.pdf",width=11,height=5)
+
+```
+
+Pathways in mature B cells 1
+```{r}
+
+forgsea <- out_b1
+forgsea %<>% dplyr::mutate(stat = sign(LFC)*-log10(p_val))
+forgsea %<>% dplyr::filter(!is.na(stat))
+geneList <- forgsea$stat # The Ranked genelist
+names(geneList) <- forgsea$gene
+geneList <- sort(geneList, decreasing = T)
+
+reactome <- read.csv(here("/data/raw/reactome_download/Ensembl2Reactome_All_Levels.txt"), sep="\t", header=F)
+# Candidate pathways
+react <- list(
+  autophagy = reactome %>% dplyr::filter(V2=="R-MMU-9612973") %>% pull(V1),
+  apoptosis = reactome %>% dplyr::filter(V2=="R-MMU-109581") %>% pull(V1),
+  necrosis = reactome %>% dplyr::filter(V2=="R-MMU-5218859") %>% pull(V1),
+  upr = reactome %>% dplyr::filter(V2=="R-MMU-381119") %>% pull(V1)
+)
+
+term2gene <- data.frame(term = rep(names(react), sapply(react, length)), ens = unlist(react, use.names = F))
+
+term2gene$gene <- rownames(sce)[match(term2gene$ens, rowData(sce)$ID)]
+term2gene$ens <- NULL
+term2gene %<>% na.omit 
+table(term2gene$term) 
+
+gseaout <- GSEA(geneList, TERM2GENE = term2gene, nPerm=10000, exponent=0, pvalueCutoff = 1, minGSSize=5) #
+head(gseaout) 
+gseaout@result %>% dplyr::select("Description","NES", "p.adjust") %>% arrange(NES) 
+
+# Now look across all reactome pathways
+react <- reactome %>% dplyr::filter(grepl("R-MMU-",V2))
+term2gene <- data.frame(term=react$V4, ens=react$V1)
+term2gene$gene <- rownames(sce)[match(term2gene$ens, rowData(sce)$ID)]
+term2gene$ens <- NULL
+term2gene %<>% na.omit 
+
+set.seed(12345)
+gseaout <- GSEA(geneList, TERM2GENE = term2gene, nPerm=10000, exponent=0, pvalueCutoff = 0.05) 
+head(gseaout) 
+# View
+gseaout@result %>% dplyr::select("Description","NES", "p.adjust") %>% arrange(NES) 
+
+```
+
+Volcano for the B cells 
+FIGURE 4C
+```{r}
+library(EnhancedVolcano)
+
+EnhancedVolcano(out_b2,
+    lab = out_b2$gene,
+    x = 'LFC',
+    y = 'fdr_p_val',
+    ylim = c(0, max(-log10(out_b2[,"fdr_p_val"]), na.rm=TRUE) + 0.5),
+    title = 'Homecage versus stress',
+    pCutoff = 0.1,
+    FCcutoff = 0.2,
+    transcriptPointSize = 1.5,
+    transcriptLabSize = 4.0,
+    ylab=bquote(~-Log[10]~adjusted~italic(P)),
+    legend=c('NS','Log2 FC','Adjusted p-value',
+      'Adjusted p-value & Log2 FC'),
+        drawConnectors = TRUE,
+    widthConnectors = 0.2,
+    colConnectors = 'grey30'
+    )
+
+ggsave(filename = here("pics/apollo_mature_b2_de_volcano.pdf"), width=4.5, height=8.5)
+
+```
+
+```{r}
+sessionInfo()
+```

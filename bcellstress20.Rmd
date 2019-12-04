@@ -1,0 +1,248 @@
+---
+title: "single cell"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+Uncomment the following line in the script below if rerunning
+save(sce, file=paste0(here("res/"),"sce1.R"))
+
+```{r setup, include=FALSE}
+
+datadir <- "/Users/mary/dataraw/scrnaseq/2018_mouse_meninges_stress_nih"
+
+library(Seurat)
+library(magrittr)
+library(pbapply)
+library(tidyverse)
+library(scater)
+library(DropletUtils) # for emptydrops
+library(Matrix)
+```
+
+The numbers 1, 2 and 3 after the cell barcode sequences reflect the sample IDs, HC1, HC2 and SD2 respectively.
+
+Read in with scater
+```{r}
+
+# Generate an sce, point to file path
+sce <- DropletUtils::read10xCounts(paste(datadir,"raw_gene_bc_matrices",sep="/"), col.names = TRUE, type="auto")
+
+```
+
+```{r}
+colData(sce)$group <- substr(colData(sce)$Barcode, 18,18)
+colData(sce)$cond <- ifelse(colData(sce)$group %in% c(1,2),"HC","SD")
+print("Here are the raw cell counts per sample:")
+table(colData(sce)$group) # See unfiltered cell barcodes per 10X lane
+print("And raw cell counts per condition, in total")
+table(colData(sce)$cond) # check, great
+```
+
+Use Biomart to get more information on the genes
+```{r}
+library(biomaRt) 
+ens_mouse <- useEnsembl(biomart='ensembl', dataset='mmusculus_gene_ensembl') 
+
+replace_gene_info_biomart <- function(data, ensembl){
+  gene.info <- rowData(data)
+  symbol_new <- getBM(attributes=c('ensembl_gene_id', 'external_gene_name', 'mgi_symbol','mgi_description','chromosome_name', 'start_position', 'end_position', 'strand','gene_biotype'),  
+                      mart=ensembl,
+                  values=gene.info[, 1])
+  gene.merge <- merge(symbol_new, gene.info, by.x=c('ensembl_gene_id'), by.y=c('ID'), all.y=TRUE)
+  colnames(gene.merge)[colnames(gene.merge)=="strand"] <- "strand_position" # cannot have columns named "seqnames",  "ranges", "strand", "start", "end", "width",  or "element" in later processing (subsetting) so rename here
+  rownames(gene.merge) <- gene.merge$ensembl_gene_id
+  gene.merge <- gene.merge[gene.info[, 1], ] # Correct order
+  rowData(data) <- gene.merge
+  return(data)
+}
+
+sce <- replace_gene_info_biomart(sce,ensembl=ens_mouse)
+
+```
+
+# Barcode ranks: knee and inflection
+```{r}
+par(mfrow=c(1,3),mar=c(5,4,2,1), bty="n")
+bcranks <- pblapply(unique(colData(sce)$group), function(c){
+  bcrank = barcodeRanks(counts(sce)[, colData(sce)$group %in% c])
+  uniq = !duplicated(bcrank$rank)
+  plot(bcrank$rank[uniq], bcrank$total[uniq], log="xy", 
+       xlab="Rank", ylab="Total UMI count", cex=0.5, cex.lab=1.2)
+  abline(h=bcrank@metadata$inflection, col="darkgreen", lty=2)
+  abline(h=bcrank@metadata$knee, col="dodgerblue", lty=2)
+  legend("left", legend=c("Inflection", "Knee"), bty="n", 
+         col=c("darkgreen", "dodgerblue"), lty=2, cex=1.2)
+  title(main=c)
+  return(bcrank)
+})
+
+# Note that inflexion is more premissive (includes more cells)
+print("Look at the inflection point for each sample. This gives the total UMI count at the inflection point:")
+sapply(bcranks,function(x){x@metadata$inflection})
+
+tmp <- lapply(bcranks,
+              function(c) {
+                bcrank <- c
+                bcrank$total >= bcrank@metadata$inflection})
+
+print("Look at how many cells inflection cut-off would give us:")
+sapply(tmp, table)
+
+tmp <- lapply(bcranks,
+              function(c) {
+                bcrank <- c
+                bcrank$total >= bcrank@metadata$knee})
+
+print("And for the knee:")
+sapply(tmp, table)
+
+```
+
+# Emptydrops
+```{r echo=FALSE}
+set.seed(111)
+
+library(here)
+pdf(file=paste(here("pics"),"exp042_emptydrops01.pdf",sep="/"))
+
+par(mar=c(5,4,1,1), mfrow=c(3,2), bty="n")
+
+# Function to get emptydrop cells AND a more conservative version where also drop those below UMI inflection point
+call_cells = function(c,sce){
+  e.chan <- emptyDrops(counts(sce)[, colData(sce)$group %in% c])
+  is.cell = (e.chan$FDR <= 0.01) # choice just based on FDR
+  bcrank <- bcranks[[as.numeric(c)]]
+  w2kp = is.cell & (e.chan$Total >= bcrank@metadata$inflection) # UMI inflexion cutoff
+  plot(e.chan$Total, -e.chan$LogProb, col=ifelse(is.cell, "red", "black"),
+       xlab="Total UMI count", ylab="-Log Probability", cex=0.2)
+  abline(v = bcrank@metadata$inflection, col="darkgreen")
+  abline(v = bcrank@metadata$knee, col="dodgerblue")
+  legend("bottomright", legend=c("Inflection", "Knee"), bty="n", 
+         col=c("darkgreen", "dodgerblue"), lty=1, cex=1.2)
+  plot(e.chan$Total, -e.chan$LogProb, col=ifelse(is.cell, "red", "black"),
+       xlab="Total UMI count", ylab="-Log Probability", cex=0.2, xlim=c(0,2000), ylim=c(0,2000))
+  abline(v = bcrank@metadata$inflection, col="darkgreen")
+  abline(v = bcrank@metadata$knee, col="dodgerblue")
+  return(list("e.chan"=e.chan, "w2kp"=w2kp))
+}
+
+edroplist <- pblapply(unique(colData(sce)$group), call_cells, sce=sce)
+dev.off()
+```
+
+# Choose is.cell by emptydrops AND most conservative inflection point (UMIs) from across the samples
+```{r}
+e.out <- do.call(rbind, sapply(edroplist,"[","e.chan")) # lax
+
+is.cell <- (e.out$FDR <= 0.01)
+cellIdxs <- is.cell %in% TRUE # Converts to true and false
+table(cellIdxs)
+
+# Identify empty drops for each sample for later use as 'ambient RNA' in DE testing
+sce.empty <- sce[,!cellIdxs]
+save(list=c("sce.empty"), file=paste0(here::here("res/"),"sce.empty.R"))
+
+# Inflection point for each sample
+w2kp <- do.call("c", sapply(edroplist,"[","w2kp")) 
+cellIdxs_plus_infl <- w2kp %in% TRUE # CONSERVATIVE ALTERNATIVE, ADDING UMI INFLECTION CUTOFF
+table(cellIdxs_plus_infl)
+
+# The p-values are calculated by permutation testing, hence the need to set a seed. The Limited field indicates whether a lower p-value could be obtained by increasing the number of permutations. If there are any entries with FDR above the desired threshold and Limited==TRUE, it indicates that npts should be increased in the emptyDrops call.
+table(Limited=e.out$Limited, Significant=is.cell) # 0 in bottom left, so no need to increase permutations
+
+sce <- sce[,cellIdxs_plus_infl]
+
+# Now show cells per sample
+table(sce$group)
+```
+
+## Remove completely non-expressed genes
+```{r}
+not.expressed <- Matrix::rowSums(counts(sce)) == 0
+table(not.expressed) 
+sce %<>% .[!not.expressed,] 
+```
+
+## Generate gene-level QC metrics 
+```{r}
+
+# QC doing all together
+sce <- calculateQCMetrics(sce,feature_controls=list("Mito"=grep("^mt-", rowData(sce)$Symbol)), percent_top=c(10,50,100,200,500))
+
+```
+
+## Cell-QC: mito vs. features
+```{r}
+plotColData(sce, x = "log10_total_counts", y = "pct_counts_Mito",colour_by="cond")
+```
+
+Cell-QC: outliers
+1) % mito outliers - needs to be consistent across samples as will compare %mito across samples later. Choosing high nmads because of heterogeneous cell populations.
+2) Library size outliers - not doing as have already filtered by this (inflection point on bcranks)
+3) Features / counts outliers
+
+```{r}
+# Mito % threshold
+range(sce$pct_counts_Mito)
+mito.outlier <- (isOutlier(sce$pct_counts_Mito, nmads=5, type="higher"))
+print("Mito outlier thresholds per sample (% mitochondrial):")
+attr(mito.outlier,"thresholds") 
+table("Losing this many cells from mito outlier:")
+table(mito.outlier) 
+
+# Thresholding on features
+range(sce$total_features_by_counts)
+feature.outlier <- isOutlier(sce$total_features_by_counts, nmads=3, type="lower", log=TRUE)
+attr(feature.outlier,"thresholds")
+table(feature.outlier) 
+
+print("Total cells remaining after dropping outliers:")
+sce$use <- !(feature.outlier | mito.outlier) # Cell dropping
+print("Cells dropped by cell QC:")
+table(sce$use, colData(sce)$group) 
+print("Total cells remaining:")
+table(sce$use)
+
+```
+
+## Gene-QC
+Keep only genes expressed at >1 count in >1 cell 
+```{r}
+p1 <- plotHighestExprs(sce, feature_names_to_plot="external_gene_name")
+p1
+p1 <- plotExprsFreqVsMean(sce) # Average expression vs. % of expressing cells.
+p1
+
+save(sce, file=paste0(here("res/"),"sce_unfiltered.R")) 
+sce <- scater::filter(sce, use==TRUE)
+sprintf("Cellular QC leaves %d genes and %d cells.",nrow(sce),ncol(sce))
+
+filter_genes <- apply(counts(sce), 1, 
+                      function(x)
+                      { length(x[x > 1]) >= 2 }
+)
+
+rowData(sce)$use <- filter_genes 
+
+write.table(rowData(sce) %>% as.data.frame %>% dplyr::select(external_gene_name, ensembl_gene_id), file=here("res/sce_genelist_prefiltering.csv"), row.names = F, sep="\t") # Save list of genes expressed in dataset at all prior to filtering
+
+sce <- sce[rowData(sce)$use,]
+
+sprintf("Retaining genes with >1 count in >1 cell leaves %d genes.", nrow(sce))
+
+# UNCOMMENT if rerunning
+# save(sce, file=paste0(here("res/"),"sce1.R")) # UNCOMMENT TO RERUN FILE
+
+# Now features and mito are:
+range(sce$pct_counts_Mito)
+range(sce$total_features_by_counts)
+
+```
+
+```{r}
+
+sessionInfo()
+
+```

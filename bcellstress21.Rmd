@@ -1,0 +1,216 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: console
+---
+
+1) Doublet calling
+2) Normalization
+3) Identification of highly variable genes
+4) Mutual nearest neighbour batch correction 
+
+Part of this is run in Jupyter notebook where indicated
+
+```{r}
+library(here)
+library(scran)
+library(scater)
+library(tidyverse)
+library(Seurat)
+library(pbapply)
+library(magrittr)
+library(batchelor)
+
+load(here("res/sce1.R"))
+source(here("scripts/functions_lynall.R"))
+
+# Drop symbol and use external_gene_name instead
+rowData(sce)$Symbol <- rowData(sce)$external_gene_name
+
+# Shorten ensembl ID to ID
+colnames(rowData(sce))[colnames(rowData(sce))=="ensembl_gene_id"] <- "ID"
+
+dim(sce)
+```
+
+```{r}
+# # Split into list
+sce <- list("HC1" = sce[,sce$group==1], "HC2" = sce[,sce$group==2], "CSD" = sce[,sce$group==3])
+
+```
+
+## Scrublet
+Write counts to csv for use in python notebook, then use following method
+https://github.com/AllonKleinLab/scrublet/blob/master/examples/scrublet_basics.ipynb
+```{r}
+
+write.csv(t(as.matrix(counts(sce[[1]]))), file=here("res/counts_hc1.csv"), row.names = T)
+write.csv(t(as.matrix(counts(sce[[2]]))), file=here("res/counts_hc2.csv"), row.names = T)
+write.csv(t(as.matrix(counts(sce[[3]]))), file=here("res/counts_csd.csv"), row.names = T)
+
+# 20190724
+# Estimated doublet rates % were 6.9%, 5.1% and 3.4% (threshold chosen by bimodality on visual inspection)
+
+```
+
+Load scrublet output
+```{r}
+scrub1 <- read.table(here("res/scrub1_doublets.csv"))[,1]
+scrub2 <- read.table(here("res/scrub2_doublets.csv"))[,1]
+scrub3 <- read.table(here("res/scrub3_doublets.csv"))[,1]
+
+colData(sce[[1]])$scrublet <- scrub1
+colData(sce[[2]])$scrublet <- scrub2
+colData(sce[[3]])$scrublet <- scrub3
+
+lapply(sce,function(x){table(x$scrublet)})
+
+# Remove doublets
+sce <- lapply(sce,function(x){
+  x <- x[,colData(x)$scrublet=="False"]
+  })
+lapply(sce,dim)
+print("Total number of cells:")
+sapply(sce,ncol) %>% sum
+```
+
+# Normalization with ComputeSumFactors
+Deconvolution method with pre-clustering (Lun, Bach, and Marioni 2016) to compute size factors for scaling normalization of cell-specific biases.
+```{r}
+
+set.seed(1000)
+
+# Compute sum factors and normalize each individually. 
+sce <- pblapply(sce, function(c) {
+  clusters <- quickCluster(c, method="igraph", min.mean=0.1, use.ranks=FALSE)
+  sizeFactors(c) <- computeSumFactors(c,
+   clusters = clusters,
+   min.mean = 0.1, # as per documentation for UMIs
+   sf.out = TRUE)
+   print(table(clusters)) 
+  c <- normalize(c)
+})
+
+# Check no negative size factors
+sapply(sce, function(x){table(sizeFactors(x)>0)})
+
+# Get biological variation for each
+dec <- pblapply(sce, function(c) {
+  tech.trend <- makeTechTrend(x=c)
+  fit <- trendVar(c,use.spikes=FALSE)
+  dec <- decomposeVar(c, fit)
+  plot(dec$mean, dec$total, xlab="Mean log-expression", 
+    ylab="Variance of log-expression", pch=16) 
+   return(dec)
+ })
+
+```
+
+# Feature selection: Identify highly variable genes
+```{r}
+
+# Use genes with mean biological variation >0
+mean.bio <- (dec[[1]][,"bio"] + dec[[2]][,"bio"] + dec[[3]][,"bio"])/3
+chosen <- rownames(sce[[1]])[mean.bio > 0]
+length(chosen) # 3653
+
+sce[[1]]$Experiment <- "HC1"
+sce[[2]]$Experiment <- "HC2"
+sce[[3]]$Experiment <- "CSD"
+
+```
+
+## Multibatch norm then MNN
+```{r}
+
+# Multibatchnorm to correct for differences in sum factors between batches
+combi <- batchelor::multiBatchNorm(sce[[1]], sce[[2]], sce[[3]])
+combi <- cbind(combi[[1]], combi[[2]], combi[[3]], deparse.level=1)
+
+# Assign highly variable genes chosen from across the 3 samples.
+metadata(combi)$hvg <- chosen
+
+# Run fastMNN using the hvg only.
+# Multibatchnorm is more accurate rescaling than cosine normalization on the log-values.
+library(BiocSingular) # For irlba PCA
+mnn <- batchelor::fastMNN(combi, batch = combi$Experiment, subset.row = metadata(combi)$hvg, pc.input = FALSE, auto.order=TRUE, cos.norm = FALSE, BSPARAM=IrlbaParam())
+
+reducedDim(combi, "MNN") <- reducedDim(mnn,"corrected") # By default keeps 50 components from the PCA
+
+# Corrected counts for HVGs 
+sce_reconstructed <- SingleCellExperiment(
+  assays=list(logcounts=assay(mnn, "reconstructed"))
+)
+colData(sce_reconstructed) <- colData(combi)
+rowData(sce_reconstructed) <- rowData(combi)[combi@metadata$hvg,]
+```
+
+Compare corrected and uncorrected output
+```{r}
+library(scater)
+# Uncorrected
+set.seed(100)
+osce <- scater::runPCA(combi, ncomponents=50, ntop=Inf, BSPARAM=IrlbaParam(), feature_set = combi$hvg) # set 50 components to be the same as the number for MNN 
+osce <- scater::runTSNE(osce, use_dimred="PCA") # Defaults to all dims (i.e. will use all 50 dims)
+ot <- plotTSNE(osce, colour_by="Experiment") + ggtitle("Original")
+ot <- lynall_dimred(reducedDim(osce,"TSNE"), color_by = osce$Experiment, label="Experiment")
+
+# Corrected
+set.seed(100)
+combi <- scater::runTSNE(combi, use_dimred="MNN")
+ct <- lynall_dimred(reducedDim(combi,"TSNE"), color_by = osce$Experiment, label="Experiment") 
+
+multiplot(ot, ct, cols=2)
+
+## Now use Seurat to run the UMAPs with min.dist and spread.
+library(Seurat)
+# Corrected UMAP (add back onto sce)
+seur <- as.Seurat(combi)
+seur <- Seurat::RunUMAP(seur, reduction="MNN", dims=1:50, min.dist=0.5, spread=2.5)
+reducedDim(combi,"UMAP") <- Embeddings(seur,"umap")
+
+# Uncorrected UMAP
+seur_pre <- as.Seurat(osce)
+seur_pre <- Seurat::RunUMAP(seur_pre, reduction="PCA", dims=1:50, min.dist=0.5, spread=2.5)
+
+library(cowplot)
+p1 <- lynall_dimred(Embeddings(seur,"TSNE"), color_by = seur$Experiment, label="Experiment", size=0.01)
+p2 <- lynall_dimred(Embeddings(seur_pre,"TSNE"), color_by = seur_pre$Experiment, label="Experiment", size=0.01)
+g <- plot_grid(p2, p1, ncol=2)
+save_plot(g, filename = here::here("pics/sc_batch_correction_efficacy_TSNE.pdf"), base_width=14, base_height=7)
+
+p1 <- lynall_dimred(Embeddings(seur,"umap"), color_by = seur$Experiment, label="Experiment", size=0.01)
+p2 <- lynall_dimred(Embeddings(seur_pre,"umap"), color_by = seur_pre$Experiment, label="Experiment", size=0.01)
+g <- plot_grid(p2, p1, ncol=2)
+save_plot(g, filename = here::here("pics/sc_batch_correction_efficacy_UMAP.pdf"), base_width=14, base_height=7)
+
+```
+
+```{r}
+
+endog_genes <- !rowData(combi)$is_feature_control
+
+# Distribution of variance explained across all genes.
+plotExplanatoryVariables(
+    combi[endog_genes, ],
+    exprs_values = "logcounts",
+    variables = c(
+        "total_features_by_counts",
+        "total_counts",
+        "group",
+        "pct_counts_Mito"
+    )
+)
+
+```
+
+SAVE
+```{r}
+save(list=c("combi","sce_reconstructed"), file=paste(here("res"), "mnn.R", sep="/"))
+
+sessionInfo()
+```
+

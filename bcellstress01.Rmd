@@ -1,0 +1,232 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+File to make Figure 1
+
+```{r}
+
+library(tidyverse)
+library(magrittr)
+library(reshape2)
+library(ggplot2)
+
+load("/Users/mary/data/exp013_mindful/start_data_mindful.R")
+load("/Users/mary/data/exp013_mindful/mindful_gated_b.R")
+rownames(all_b_count)
+
+# Pre-stress
+data_b <- data.frame("sample"=substr(colnames(all_b_count),4,6),
+  "transitional_of_b"=as.numeric((all_b_count["T1",] + all_b_count["T2",])/all_b_count["cd19+",]),
+  "naive_of_b"=as.numeric(all_b_count["naive_b",]/all_b_count["cd19+",]),
+  "plasmablasts_of_b"=as.numeric(all_b_count["plasmablasts",]/all_b_count["cd19+",]),
+  "switched_of_b"=as.numeric(all_b_count["switched",]/all_b_count["cd19+",]),
+  "non-switched_memory_of_b"=as.numeric(all_b_count["non-switched memory",]/all_b_count["cd19+",]),
+  "cd19_of_pbmc"=as.numeric(all_b_count["cd19+",]/all_b_count["live_fsc",])
+)
+
+# Post-stress
+data_b_post <- data.frame("sample"=substr(colnames(all_b_count_post),4,6),
+  "transitional_of_b"=as.numeric((all_b_count_post["T1",] + all_b_count_post["T2",])/all_b_count_post["cd19+",]),
+  "naive_of_b"=as.numeric(all_b_count_post["naive_b",]/all_b_count_post["cd19+",]),
+  "plasmablasts_of_b"=as.numeric(all_b_count_post["plasmablasts",]/all_b_count_post["cd19+",]),
+  "switched_of_b"=as.numeric(all_b_count_post["switched",]/all_b_count_post["cd19+",]),
+  "non-switched_memory_of_b"=as.numeric(all_b_count_post["non-switched memory",]/all_b_count_post["cd19+",]),
+  "cd19_of_pbmc"=as.numeric(all_b_count_post["cd19+",]/all_b_count_post["live_fsc",])
+)
+
+# Check
+head(data_b)
+head(data_b_post)
+colnames(data_b)
+dim(data_b) # 55 samples pre
+dim(data_b_post) # 47 samples post
+
+data_b_post_tmp <- data_b_post[,-1]
+colnames(data_b_post_tmp) <- paste(colnames(data_b_post_tmp),"_post",sep="")
+data_b_post_tmp$sample <- data_b_post$sample
+# Merge clinical and B data
+data_all<-merge(data, data_b, by.x="sample", by.y="sample", all.x=TRUE, all.y=FALSE)
+# Merge pre and post immunophenotyping
+data_all <- merge(data_all, data_b_post_tmp, by.x="sample",by.y="sample",all.x=TRUE,all.y=FALSE)
+
+```
+
+Participant QC:
+```{r}
+
+# Clinical data
+data_all[,c("sample","core_all","core_all_p")] # participant MSS857 is missing their second core score as they did not reattend 
+
+# List of participants with both clinical scores
+subs_followup <- data_all %>% dplyr::filter(!is.na(core_all) & !is.na(core_all_p)) %>% dplyr::pull(sample) 
+
+# Immunophenotyping data
+data_all[!complete.cases(data_all),c("sample","plasmablasts_of_b","plasmablasts_of_b_post")] # 10 participants (including MSS857 above) are missing either the pre or post immunophenotyping panel
+
+#  Check time distance between samples
+library(lubridate)
+hist(as.duration(data_all$date_pre %--% data_all$date_post) / dweeks(1), breaks=100) # i.e. samples aquired 15-19 weeks apart
+```
+
+Calculated absolute change in distress score
+```{r}
+data_all$delta_c_abs <- data_all$core_all_p - data_all$core_all
+```
+
+Concatenated pre-and-post dataframe for plotting
+```{r}
+# Pre-stress
+tp1 <- merge(data, data_b, by.x="sample", by.y="sample", all.x=TRUE, all.y=FALSE) 
+tp1$core_all_p <- NULL
+tp1$time <- "pre"
+
+tp2 <- merge(data, data_b_post, by.x="sample", by.y="sample", all.x=TRUE, all.y=FALSE)
+tp2$core_all <- NULL
+colnames(tp2)[colnames(tp2) %in% "core_all_p"] <- "core_all"
+tp2$time <- "post"
+
+concat <- rbind(tp1,tp2)
+concat$time %<>% fct_relevel("pre","post")
+
+```
+
+## PLS-R for change in cell percentages vs. change in CORE distress score:
+```{r}
+# Make b cell subset fold-change variables
+data_all %<>% dplyr::mutate(
+  cd19_of_pbmc_fc = cd19_of_pbmc_post / cd19_of_pbmc,
+  transitional_of_b_fc = transitional_of_b_post / transitional_of_b,
+  naive_of_b_fc = naive_of_b_post / naive_of_b,
+  plasmablasts_of_b_fc = plasmablasts_of_b_post / plasmablasts_of_b,
+  switched_of_b_fc = switched_of_b_post / switched_of_b,
+  non.switched_memory_of_b_fc = non.switched_memory_of_b_post / non.switched_memory_of_b
+  )
+
+predictors <- c("cd19_of_pbmc_fc","transitional_of_b_fc","naive_of_b_fc","plasmablasts_of_b_fc","switched_of_b_fc","non.switched_memory_of_b_fc")
+
+labels_predictors <- c("CD19+ of PBMCs\n(fold change)","transitional of B\n(fold change)","Naive of B\n(fold change)","plasmablasts of B\n(fold change)","% switched of B\n(fold change)","non-switched memory of B\n(fold change)")
+
+response <- "delta_c_abs" 
+
+full <- data_all[complete.cases(data_all[,c(response,predictors)]),]; nrow(full) # Only using the 45 participants with complete data
+
+# Included participants
+subs_cells <- full$sample
+
+library(ropls)
+set.seed(12345)
+m.pls <- opls(full[,predictors],as.matrix(full[,response]), plotL=FALSE, permI=5000) # single component model is significant
+rev(sort(getVipVn(m.pls))) # Most important cell subset is CD19 of B
+m.pls
+# PLS
+# 45 samples x 6 variables and 1 response
+# standard scaling of predictors and response(s)
+#       R2X(cum) R2Y(cum) Q2(cum) RMSEE pre ort  pR2Y    pQ2
+# Total    0.288    0.156  0.0779 0.493   1   0 0.125 0.0402
+
+# Test significance of the weights
+library(boot)
+boot.out <- list()
+  getweight <- function(data,ind){
+    x <- data[ind,] # Allow bootstrap to select subset
+    m.pls <- opls(x[,predictors],as.matrix(x[,response]), permI=0, predI=1, printL=FALSE, plotL=FALSE)
+    tmp <- getWeightMN(m.pls)
+    return(tmp)
+  }
+  
+  set.seed(222)
+  boot.out <- boot(full,getweight,R=5000) 
+
+# Generate bootstrapped z-score
+boot.z <- boot.out$t0 / apply(boot.out$t,2,sd) 
+boot.z[rev(order(boot.z)),] # Only significantly weighted cell type is cd19_of_pbmc_fc (bootZ = 3.4)
+
+# Force two components to generate the scores plot
+m.pls.two <- opls(full[,predictors],as.matrix(full[,response]), permI=1,predI=2, plotL=FALSE)
+
+# Scores plot 
+ggplot(data=as.data.frame(m.pls.two@scoreMN),aes(x=p1,y=p2)) + geom_point(aes(colour=full$gender)) + ggtitle("")  + theme_bw() + geom_hline(yintercept =0) + geom_vline(xintercept=0) + stat_ellipse() + xlab("Component 1") + ylab("Component 2") 
+ggsave(file=here::here("pics/apollo_pls_matrix_core_vs_counts.pdf"), width=7, height=4.8) 
+
+# Weights plot
+tmp <- as.data.frame(m.pls.two@weightStarMN)
+tmp$component <- "predictor"
+tmp$boot.z <- boot.z
+tmp2 <- as.data.frame(m.pls.two@cMN)
+tmp2$component <- "response"
+tmp2$boot.z <- 999 # To force response to be shown on plot
+(weights_combi <- bind_rows(tmp, tmp2))
+weights_combi$label <- c(labels_predictors,"Change in distress\nscore (CORE-OM)")
+```
+
+FIGURE 1C
+```{r}
+# Loadings (sig X)
+library(ggrepel)
+p <- ggplot(data=weights_combi,aes(x=p1,y=p2, colour=component, label=label)) + geom_point() + ggtitle("")  + theme_bw() + geom_hline(yintercept =0) + geom_vline(xintercept=0) + xlab("Component 1") + ylab("Component 2") + guides(color=guide_legend(title="Variables")) + geom_label_repel(data=dplyr::filter(weights_combi,boot.z>3),aes(x=p1,y=p2, colour=component)) + scale_color_manual(values=c("dark green","purple")) + theme(legend.position = c(0.85,0.15),legend.background = element_rect(color = "black")) 
+
+ggsave(p, file=here::here("pics/apollo_pls_core_vs_counts_weights.pdf"),width=4.4, height=4)
+
+
+```
+
+FIGURE 1B
+```{r}
+
+# Data are normal, so do pearson correlation
+test <- cor.test(data_all$delta_c_abs,data_all$cd19_of_pbmc_fc)
+test
+# t = 2.4, df = 43, p-value = 0.0208, cor=0.34
+
+ggplot(data_all, aes(x=delta_c_abs, y=cd19_of_pbmc_fc)) + 
+  geom_point(aes(color=gender)) + 
+  geom_smooth(method="lm", se=FALSE, fullrange=T) + 
+  xlab("Change in distress score (CORE-OM)") + 
+  ylab("Fold-change in % B cells of PBMCs") + 
+  scale_color_manual(values=c("maroon4","midnightblue"), name="Sex") + 
+  theme_bw() + theme(legend.background = element_rect(linetype = 1, size = 0.2, color=1)) + 
+  annotate(geom="text", 
+           label=paste(
+             paste("p = ", signif(test$p.value,1),sep=""), 
+             paste("r = ",signif(test$estimate,1),sep=""), sep="\n"), x=-0.7, y=4.2, size=4)
+
+ggsave(file=here::here("pics/apollo_b_vs_core_final_nogender.pdf"),width=4,height=4)
+
+```
+
+FIGURE 1A (change in CORE-OM for participants with B cell data)
+```{r}
+
+print("Expect increase in distress with stress, so use one-sided paired t-test")
+(test <- t.test(data[data$sample %in% subs_cells,"core_all_p"], data[data$sample %in% subs_cells,"core_all"], paired=TRUE, alternative="greater"))
+# t = 0.34387, df = 44, p-value = 0.3663, mean of differences 0.03
+
+library(ggsignif)
+ggplot(data=dplyr::filter(concat, sample %in% subs_cells),aes(x=time,y=core_all)) + 
+  geom_boxplot(outlier.shape = NA, aes(fill=time)) + 
+  geom_jitter(shape=1, width=0.2, size=1) + 
+  xlab("") + 
+  ylab("CORE-OM total score") + 
+  scale_x_discrete(labels=c(pre="Pre-stress",post="Post-stress")) + 
+  theme_bw() +
+  scale_fill_manual(values = c("thistle1","thistle3")) +
+  guides(fill=FALSE) +
+  annotate(geom="text", x=1.5, y=3.4, label=paste0("p = ",signif(test$p.value,1))) # Uses the paired one-sided t-test
+
+ggsave(file=here::here("pics/apollo_change_in_core.pdf"), width=2.5,height=3.2, useDingbats=FALSE)
+
+```
+
+Numbers by gender
+```{r}
+table(data_all[complete.cases(data_all[,c("delta_c_abs","cd19_of_pbmc_fc")]),"gender"])
+```
+
+```{r}
+sessionInfo()
+```
+
+
+

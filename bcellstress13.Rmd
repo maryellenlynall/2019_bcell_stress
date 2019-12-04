@@ -1,0 +1,296 @@
+---
+title: "Figures"
+output: html_document
+---
+
+Makes:
+- Figure S5: correlation plot of meningeal vs. splenic cell counts
+- Figure S3E: Correlations between splenic cell counts and behaviour in stressed group
+- Figure 3H: Correlation between behaviour and meningeal cell counts
+- Figure S9E and S9G: comparison of effects of stress in CD19 and WT mice
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(here)
+load(here("/res/apollo_together.RData")) 
+
+prop_above_ll <- 0.9
+
+# Checking datapoint numbers for spleen
+na.omit(forpls[forpls$strain=="wt",c("cond","fix_sme_ly_plasma")]) -> tmp
+table(tmp$cond)
+
+na.omit(forpls[forpls$cond=="hc",c("strain","fix_sme_ly_plasma")]) -> tmp
+table(tmp$strain)
+
+na.omit(forpls[forpls$strain=="cd19",c("cond","fix_sme_ly_plasma")]) -> tmp
+table(tmp$cond)
+
+# Checking datapoint numbers for meninges
+table(na.omit(forpls[forpls$strain=="wt",c("cond","lc_men_helper")])$cond)
+table(na.omit(forpls[forpls$cond=="hc",c("strain","lc_men_helper")])$strain)
+table(na.omit(forpls[forpls$strain=="cd19",c("cond","lc_men_helper")])$cond)
+
+# Checking datapoint numbers for meninges for cytokines
+table(na.omit(forpls[forpls$strain=="wt",c("cond","Mo.Eotaxin.74")])$cond)
+table(na.omit(forpls[forpls$cond=="hc",c("strain","Mo.Eotaxin.74")])$strain)
+table(na.omit(forpls[forpls$strain=="cd19",c("cond","Mo.Eotaxin.74")])$cond)
+
+table(forpls[forpls$cond=="hc",c("strain")])
+
+# Check ages
+library(tidyverse)
+library(magrittr)
+load(here("res/data_imp.R"))
+colnames(data_imp) %<>% gsub("\\+", "pos", .)
+colnames(data_imp) %<>% gsub("\\-", "neg", .)
+data_imp$age.baseline
+
+# Age does not depend on condition, age or group
+kruskal.test(age.baseline ~ cond, data=data_imp) 
+kruskal.test(age.baseline ~ strain, data=data_imp) 
+data_imp$tmp <- factor(paste(data_imp$strain,data_imp$cond,sep=""))
+kruskal.test(age.baseline ~ tmp, data=data_imp)
+
+inv_pls <- inv_limma_pls 
+deb <- limma_deb
+
+options(scipen=100, digits=6)
+
+```
+
+Make correlation plots of: 
+1) Changed spleen counts (in stress vs. control) vs behaviour
+2) Changed meneings counts (in stress vs. control) vs behaviour
+Use debatched counts.
+
+```{r}
+library(gdata)
+# Function for corrplot. Only does two kinds of corrplot: 1) where x and y are identical lists of features 2) where x and y are non-overlapping features. Anything else would give incorrect adjusted p-values unless code adjusted.
+lynall_corrplot <- function(data, x_feat, y_feat, labelset ,corrtype="spearman",  sig_break=0.05, sig_blank=0.1, guides=TRUE,circles=TRUE,values=c(0,4,7),...){ 
+  require(magrittr)
+  forcor <- data[,c(x_feat,y_feat)] 
+  tmp <- Hmisc::rcorr(data.matrix(forcor), type=corrtype)
+  tmp <- lapply(tmp,"[",x_feat,y_feat) # subset
+  xlab <- labelset[x_feat]
+  ylab <- labelset[y_feat]
+  
+  # If the corrplot is symmetric with same features on x and y, don't want to correct across all p values, only matrix upper triangle
+  if(identical(x_feat,y_feat)){
+    print("x axis and y axis features identical, only correct across (n-1)*n/2 comparisons")
+    pvals <- upperTriangle(tmp$P)
+    padj <- p.adjust(pvals, method="BH")
+    print(sprintf("Correct for %s comparisons", length(padj)))
+    # Put back into matrix
+    tmp$padj <- tmp$P
+    upperTriangle(tmp$padj) <- padj
+    lowerTriangle(tmp$padj) <- upperTriangle(tmp$padj, byrow = TRUE)
+    print(tmp$P[1:5,1:5])
+    print(tmp$padj[1:5,1:5])
+    # Make dataframe for ggplot
+    pvals <- reshape2::melt(dplyr::as_tibble(tmp$P, rownames="x_feature"), value.name="pval", id.vars="x_feature", variable.name="y_feature")
+    diag(tmp$r) <- NA
+    corr <- reshape2::melt(dplyr::as_tibble(tmp$r, rownames="x_feature"), value.name="corr", id.vars="x_feature", variable.name="y_feature")
+    print(head(corr))
+    padj <- reshape2::melt(dplyr::as_tibble(tmp$padj, rownames="x_feature"), value.name="padj", id.vars="x_feature", variable.name="y_feature")
+    dim(pvals)
+    dim(padj)
+    pvals$corr <- corr$corr
+    pvals$padj = padj$padj
+    pvals$pval = signif(pvals$pval,3)
+    pvals$padj = signif(pvals$padj,3)
+    # Make NA rows for diagnoal
+    head(pvals)
+    pvals <- tidyr::complete(pvals, x_feature, y_feature)
+    print(as.data.frame(pvals)[1:30,])
+  } else {
+    print("rows and columns are different variables: correct across all comparisons tested")
+    pvals <- reshape2::melt(dplyr::as_tibble(tmp$P, rownames="x_feature"), value.name="pval", id.vars="x_feature", variable.name="y_feature")
+    corr <- reshape2::melt(dplyr::as_tibble(tmp$r, rownames="x_feature"), value.name="corr", id.vars="x_feature", variable.name="y_feature")
+    pvals$corr <- corr$corr
+    pvals$padj = p.adjust(pvals$pval, method="BH")
+    pvals$pval = signif(pvals$pval,3)
+    pvals$padj = signif(pvals$padj,3)
+  }
+  
+  pvals$thh <- "Not sig"
+  # pvals$thh[is.na(pvals$padj)] <- NA
+  pvals$thh[pvals$padj<sig_break] <- paste0("p(adj)<",sig_break)
+  pvals$thh[pvals$padj>=sig_break & pvals$padj<sig_blank] <- paste0("p(adj)<",sig_blank)
+  pvals$thh <- factor(pvals$thh, levels=c("Not sig", paste("p(adj)<",sig_blank,sep=""),paste("p(adj)<",sig_break,sep="")), ordered=TRUE)
+  print(pvals[order(pvals$padj),]) %>% knitr::kable() %>% kableExtra::kable_styling()
+  
+  if(isTRUE(guides)){guiding = guides(fill=guide_colorbar(title="Correlation"), size=guide_legend(title="Significance"))}
+  if(!isTRUE(guides)){guiding = guides(fill=FALSE, size=FALSE)}
+
+  cols <- rev(c("#67001F","#B2182B","#F4A582","#F7F7F7","#92C5DE","#2166AC","#053061"))
+  
+  pvals$x_feature <- factor(pvals$x_feature, levels=x_feat)
+  pvals$y_feature <- factor(pvals$y_feature, levels=y_feat)
+
+  if(isTRUE(circles)){shape=21}else{shape=22}
+  p <- ggplot(pvals, aes(x=x_feature, y=y_feature, fill=corr, size=thh)) + geom_point(shape=shape) + 
+    scale_size_manual(values=values) + 
+    scale_x_discrete(labels=parse(text = xlab)) + 
+    scale_y_discrete(labels=parse(text = ylab)) +
+    guiding +
+    theme_minimal() + 
+    theme(axis.text = element_text(size=13), axis.text.x = element_text(angle = 90, hjust = 1, vjust=0.5), legend.title = element_text(size=12)) + 
+    coord_fixed() +
+    scale_fill_gradientn(colors=cols, limits=c(-1,1)) + xlab("") + ylab("") 
+
+  out <- list(plot=p, pvals=pvals, n=nrow(data), corrtype=corrtype, sig_blank=sig_blank, sig_break=sig_break)
+}
+```
+
+Make correlation plot (Figure S5) of meningeal vs. splenic cell counts.
+```{r}
+for_cor <- c(men_counts, spl_counts, "fix_sme_ly_b_cd9")
+
+# Do correlation plot for all wildtype animals (i.e. both homecage and stressed). NB. Need to comment in the thh=NA above to get a version with blank diagonal
+out <- lynall_corrplot(data=inv_pls[inv_pls$strain=="wt",], 
+                y_feat=for_cor, 
+                x_feat=for_cor, 
+                labelset=feature_labels, 
+                sig_blank = 0.1, 
+                sig.break=0.05,
+                values=c(2,3.5,5), guides = T) # Correcting for 378 comparisons
+out$plot
+#out$pvals
+ggsave(out$plot, filename = paste0(here("pics/"),"apollo_nih_corr_spl_counts_w_men_counts_",out$n,"_animals_",out$corrtype,"_",out$sig_blank,"_",out$sig_break,".pdf"),width=14,height=11)
+write.table(out$pvals,file=paste0(here("res/"),"apollo_nih_corr_spl_counts_w_men_counts_",out$n,"_animals_",out$corrtype,".csv"),sep="\t", dec=".",quote=FALSE, row.names = FALSE)
+
+```
+
+How do splenic stress-associated counts relate to behaviour?
+Figure S3E
+```{r}
+beh_for_cor <- c("LD_x_10","OF_dis_10")
+spl_for_cor <- c("fix_sme_ly_plasma","fix_sme_ly_IgDpos_cd9","fix_sme_ly_IgDneg_cd9","fix_sme_my_neutrophils","fix_sme_my_f4_80_macs","fix_sme_my_inflamm_mono") # with cd9 
+
+out <- lynall_corrplot(data=inv_pls[inv_pls$strain=="wt" & inv_pls$cond=="csd",], 
+                y_feat=spl_for_cor, 
+                x_feat=beh_for_cor, 
+                labelset=feature_labels, 
+                sig_blank = 0.1, 
+                sig.break=0.05,
+                values=c(4,9,11))
+out$plot
+out$pvals
+ggsave(out$plot, filename = paste0(here("pics/"),"apollo_nih_corr_spl_counts_w_beh_",out$n,"_",out$corrtype,"_",out$sig_blank,"_",out$sig_break,".pdf"),width=4.8,height=4.8)
+write.table(out$pvals,file=paste0(here("res/"),"apollo_nih_corr_spl_counts_w_beh_",out$n,"_",out$corrtype,".csv"),sep="\t", dec=".",quote=FALSE, row.names = FALSE)
+```
+
+How do meningeal changed counts relate to changed behaviour
+Figure 3H upper panel
+```{r}
+# Now do for meninges and behaviour
+men_for_cor <- c("lc_men_b_both","lc_men_ly6c.mono") 
+out <- lynall_corrplot(data=inv_pls[inv_pls$strain=="wt" & inv_pls$cond=="csd",], 
+                y_feat=men_for_cor, 
+                x_feat=beh_for_cor, 
+                labelset=feature_labels, 
+                sig_blank = 0.1, 
+                sig.break=0.05,
+                values=c(4,9,11))
+out$plot
+out$pvals
+ggsave(out$plot, filename = paste0(here("pics/"),"apollo_nih_corr_men_counts_w_beh_",out$n,"_",out$corrtype,"_",out$sig_blank,"_",out$sig_break,".pdf"),width=4.8,height=4.8)
+write.table(out$pvals,file=paste0(here("res/"),"apollo_men_corr_spl_counts_w_beh_",out$n,"_",out$corrtype,".csv"),sep="\t", dec=".",quote=FALSE, row.names = FALSE)
+
+out_men <- out
+
+```
+
+Scatter plots for the significant ones
+Figure 3H lower panel
+```{r}
+
+# Extract the ones for plots, to use as annotations
+p_adj_men_ly6c_of_dis <- out_men$pvals %>% filter("lc_men_ly6c.mono"==y_feature & "OF_dis_10"==x_feature) %>% select(padj) %>% extract2(1,1)
+
+p_adj_men_b_ld_x <- out_men$pvals %>% filter("lc_men_b_both"==y_feature & "LD_x_10"==x_feature) %>% select(padj) %>% extract2(1,1)
+
+library(gridExtra)
+subset <- inv_pls[inv_pls$strain=="wt" & inv_pls$cond=="csd",]
+spear <- cor.test(subset$lc_men_ly6c.mono,subset$OF_dis_10, method="spearman")
+print(spear)
+p1 <- ggplot(data=subset, aes(x = lc_men_ly6c.mono, y=OF_dis_10/1000)) + 
+  expand_limits(x=c(10.5,12.5)) +
+  stat_smooth(method="lm", se=FALSE, fullrange = TRUE) + 
+  geom_point() + 
+  annotate(geom="text",label=paste(
+  paste("p(adj) = ",signif(p_adj_men_ly6c_of_dis,1),sep=""),
+  paste("rho = ",signif(spear$estimate,1),sep=""),sep="\n"),x=12.1, y=50, size=5) +
+  xlab(parse(text="log~'('*meningeal~Ly6C^{'hi'}~monocytes*')'")) +
+  ylab("Open Field Distance (m)") +
+  theme_minimal() + 
+  theme(axis.title=element_text(size=15), axis.text=element_text(size=15))
+
+spear <- cor.test(subset$lc_men_b_both,subset$LD_x_10, method="spearman")
+p2 <- ggplot(data=subset, aes(x = lc_men_b_both, y=LD_x_10)) +
+  expand_limits(x=c(10.2,13.2),y=c(14,30)) +
+  stat_smooth(method="lm", se=FALSE, fullrange=TRUE) + 
+  geom_point() +
+  annotate(geom="text",label=paste(
+  paste("p(adj) = ",signif(p_adj_men_b_ld_x,1),sep=""),
+  paste("rho = ",signif(spear$estimate,1),sep=""),sep="\n"),x=10.7, y=20, size=5) +
+  xlab("log (meningeal B cells)") +
+  ylab("Light/dark crosses") +
+  theme_minimal() + 
+  theme(axis.title=element_text(size=15), axis.text=element_text(size=15))
+
+cowplot::plot_grid(p1,p2,nrow=2, rel_heights = c(1,1), align = "hv")
+ggsave(file=here("pics/apollo_nih_inset_men_corr.pdf"),width=4.2,height=6)
+
+```
+
+Figure S9E and S9G
+Bar chart with the things that changed in stress, showing difference between CD19 and WT:
+```{r}
+
+p <- list()
+# First meninges B cells
+lab <- "Meninges:\nB cells"
+subset <- inv_pls[,c("cond","strain","lc_men_b_both")]
+p[[1]] <- ggplot(data=na.omit(subset), aes(x=strain, y=lc_men_b_both, fill=cond)) + geom_boxplot(outlier.alpha=0) + geom_point(position=position_jitterdodge(jitter.width = 0.3), size=1) + ggtitle(lab) + ylab("log(count)") + xlab("") + guides(fill=FALSE) + scale_x_discrete(labels=c("WT","CD19-/-")) + theme(axis.text=element_text(size=8), axis.title=element_text(size=10)) + scale_fill_manual(values=c("light grey","red")) + theme_bw()
+p[[1]]
+
+# Now meninges mono
+lab <- "Meninges:\nLy6C(hi) monocytes"
+subset <- inv_pls[,c("cond","strain","lc_men_ly6c.mono")]
+p[[2]] <- ggplot(data=na.omit(subset), aes(x=strain, y=lc_men_ly6c.mono, fill=cond)) + geom_boxplot(outlier.alpha=0) + geom_point(position=position_jitterdodge(jitter.width = 0.3), size=1) + ggtitle(lab) + ylab("log(count)") + xlab("") + guides(fill=FALSE) + scale_x_discrete(labels=c("WT","CD19-/-")) + theme(axis.text=element_text(size=8), axis.title=element_text(size=10)) + scale_fill_manual(values=c("light grey","red")) + theme_bw()
+#p_men_ly6c
+
+# Splenic neutro
+lab <- "Spleen:\nNeutrophils"
+subset <- inv_pls[,c("cond","strain","fix_sme_my_neutrophils")]
+p[[3]] <- ggplot(data=na.omit(subset), aes(x=strain, y=fix_sme_my_neutrophils, fill=cond)) + geom_boxplot(outlier.alpha=0) + geom_point(position=position_jitterdodge(jitter.width = 0.3), size=1) + ggtitle(lab) + ylab("log(count)") + xlab("") + guides(fill=FALSE) + scale_x_discrete(labels=c("WT","CD19-/-")) + theme(axis.text=element_text(size=8), axis.title=element_text(size=10)) + scale_fill_manual(values=c("light grey","red")) + theme_bw()
+#p_spl_neut
+
+# Splenic mono
+lab <- "Spleen:\nLy6C(hi) monocytes"
+subset <- inv_pls[,c("cond","strain","fix_sme_my_inflamm_mono")]
+p[[4]] <- ggplot(data=na.omit(subset), aes(x=strain, y=fix_sme_my_inflamm_mono, fill=cond)) + geom_boxplot(outlier.alpha=0) + geom_point(position=position_jitterdodge(jitter.width = 0.3), size=1) + ggtitle(lab) + ylab("log(count)") + xlab("") + guides(fill=FALSE) + scale_x_discrete(labels=c("WT","CD19-/-")) + theme(axis.text=element_text(size=8), axis.title=element_text(size=10)) + scale_fill_manual(values=c("light grey","red")) + theme_bw()
+#p_spl_ly6c
+
+# Splenic macro
+lab <- "Spleen:\nF4/80 macrophages"
+subset <- inv_pls[,c("cond","strain","fix_sme_my_f4_80_macs")]
+p[[5]] <- ggplot(data=na.omit(subset), aes(x=strain, fix_sme_my_f4_80_macs, fill=cond)) + geom_boxplot(outlier.alpha=0) + geom_point(position=position_jitterdodge(jitter.width = 0.3), size=1) + ggtitle(lab) + ylab("log(count)") + xlab("") + guides(fill=FALSE) + scale_x_discrete(labels=c("WT","CD19-/-")) + theme(axis.text=element_text(size=8), axis.title=element_text(size=10)) + scale_fill_manual(values=c("light grey","red")) + theme_bw()
+#p_spl_macs
+
+# Now put together
+t <- ggplot()
+dev.off()
+
+# FIGURE S9E and S9G
+g <- cowplot::plot_grid(p[[3]], p[[4]], p[[5]], p[[1]],p[[2]], nrow=2, rel_heights = c(1,1,1), align = "hv")
+cowplot::save_plot(filename = "apollo_inv_compare_barplots_cd19_and_wt_response.pdf", g, path=here("pics"), base_width=6, base_height=5)
+
+```
+
+```{r}
+sessionInfo()
+```

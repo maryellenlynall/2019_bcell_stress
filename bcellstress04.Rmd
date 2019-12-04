@@ -1,0 +1,57 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: console
+---
+
+Stress + ex vivo stimulation to detect B cell IL10 
+Makes Figure 2D
+
+```{r}
+library(readxl)
+library(ggplot2)
+library(here)
+library(tidyverse)
+library(magrittr)
+```
+
+
+```{r}
+il10_stims <- data.frame(
+  name=as.character(1:9),
+  cond = c("hc","csd","hc","csd","hc","csd","hc","csd","hc"),
+  cd19_stim = c(2.980,4.028, 3.325, 3.385, 3.161, 3.584, 2.549, 4.229, 2.489),
+  cd19_unstim = c(0.36, 1.08, 0.36, 1.12, 0.5, 1.37, 0.38, 1.19, 0.36)
+)
+
+il10_stims$cond %<>% factor(levels=c("hc","csd"), ordered=TRUE)
+
+il10_stims_long <- reshape2::melt(il10_stims, id.vars=c("name","cond"))
+il10_stims_long$variable %<>% factor(levels=c("cd19_unstim","cd19_stim"), ordered = TRUE)
+
+print("Now the stats for the Bregs")
+# Unstimulated HC vs. CD19
+(test_unstim <- t.test(il10_stims[il10_stims$cond=="hc","cd19_unstim"],il10_stims[il10_stims$cond=="csd","cd19_unstim"], alternative="two.sided", paired=FALSE))
+
+# Stimulated HC vs. CD19
+(test_stim <- t.test(il10_stims[il10_stims$cond=="hc","cd19_stim"],il10_stims[il10_stims$cond=="csd","cd19_stim"], alternative="two.sided", paired=FALSE))
+# test_unstim p = 0.0003 and test_stim p = 0.01
+
+# FIGURE 2D Breg plot
+library(ggsignif)
+
+p <- ggplot(data=il10_stims_long,aes(x=variable,y=value,fill=cond)) + geom_boxplot(outlier.shape = NA) + 
+  theme_bw() + scale_fill_manual(values=c("light grey","red")) + geom_signif(y_position=c(1.8, 4.6), xmin=c(0.8, 1.8), xmax=c(1.2, 2.2), annotation=c("***", "*")) + expand_limits(y=c(0,5)) + ylab("B cells % IL-10+") + xlab("") + scale_x_discrete(labels=c("cd19_unstim" = "Unstimulated", "cd19_stim" = "LPS+PMA+I", "2" = "Dose 2")) 
+
+ggsave(p, filename=here("pics/apollo_il10_stim_and_unstim_bcells_hc_vs_csd.pdf"),width=3,height=2.8) 
+
+```
+
+
+```{r}
+sessionInfo()
+```
+

@@ -1,0 +1,164 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+---
+
+GSEA for CD19-/- vs WT RNAseq data
+Makes:
+- Figure 5H (top GSEA results)
+- Figure S10A (full GSEA results)
+- Figure S10B (leading edge - comparison of SD vs. HC and CD19 vs. WT for interferon pathways)
+
+# GSEA with clusterprofiler
+```{r}
+library(here)
+library(ggplot2)
+library(tidyverse)
+library(magrittr)
+library(clusterProfiler)
+
+load(paste0(here::here("res/"),"apollo_deseq_out_goodsamples.R"))
+```
+
+## Hallmarks
+```{r}
+
+forgsea <- res.05
+
+forgsea %<>% 
+  as_tibble() %>%
+  dplyr::select(ortholog, stat, external_gene_name) %>% 
+  filter(!is.na(stat)) 
+
+geneList <- forgsea$stat # The Ranked genelist
+names(geneList) <- forgsea$external_gene_name
+geneList <- sort(geneList, decreasing = T)
+
+# Download the msigdbr databases 
+library(msigdbr)
+
+mouse_t2g <- msigdbr(species = "Mus musculus", category = "H") %>% 
+  dplyr::select(gs_name, gene_symbol) 
+head(mouse_t2g)
+
+# Do preranked GSEA 
+gseaout <- GSEA(geneList, TERM2GENE = mouse_t2g, nPerm=5000, exponent=0) # Some ties are okay. Exponent=1 is weighted.
+head(gseaout)
+
+# View
+gseaout@result %>% dplyr::select("Description","NES", "p.adjust") %>% arrange(NES) # 37 when convert gene set names
+```
+
+Figure S10A
+```{r}
+# My graph
+df <- gseaout@result %>% arrange(NES)
+# Make labeller
+df$label <- gsub("HALLMARK_","",df$ID) %>% tolower %>% gsub("_"," ",.)
+labeller <- df$label
+names(labeller) <- df$ID
+# Ensure order is order in df NOT alphabetical
+df$ID %<>% factor(levels=unique(df$ID), ordered = T)
+# And plot
+p <- ggplot(df, aes(x = NES, y = ID, color=as.factor(sign(NES)))) + 
+        geom_point(size=4) + 
+        theme_bw(base_size = 14) +
+        scale_y_discrete(labels=labeller) +
+        scale_colour_manual(values=c("dark blue","dark red"), labels=c("Decreased in CD19-/-","Increased in CD19-/-")) +
+        ylab(NULL) +
+        theme(legend.title = element_blank()) +
+        xlab("Normalized enrichment score") +
+        expand_limits(x=c(-4,4)) +
+        geom_vline(xintercept = 0) +
+        ggtitle("GSEA significantly enriched \nhallmark gene sets (p(adj)<0.05)")
+p
+ggsave(p,path=here::here("pics/"),filename="apollo_gsea_out.weighted.CP.goodsamples.pdf",width=6,height=8)
+```
+
+### FIGURE 5H - just the (4) upregulated pathways
+```{r}
+df <- gseaout@result %>% arrange(NES)
+df <- df[df$NES>0,]
+# Make labeller
+df$label <- gsub("HALLMARK_","",df$ID) %>% tolower %>% gsub("_"," ",.)
+labeller <- df$label
+names(labeller) <- df$ID
+# Ensure order is order in df NOT alphabetical
+df$ID %<>% factor(levels=unique(df$ID), ordered = T)
+# And plot
+p <- ggplot(df, aes(x = NES, y = ID, color=as.factor(sign(NES)))) + 
+        geom_point(size=4) + 
+        theme_bw(base_size = 14) +
+        scale_y_discrete(labels=labeller) +
+        scale_colour_manual(values=c("dark red"), labels=c("Increased in CD19-/-")) +
+        ylab(NULL) +
+        theme(legend.title = element_blank()) +
+        xlab("Normalized enrichment score") +
+        #ylab("Hallmark gene set") +
+        expand_limits(x=c(-4,4)) +
+        geom_vline(xintercept = 0) +
+        ggtitle("GSEA significantly enriched \nhallmark gene sets (p(adj)<0.05)")
+p
+ggsave(p,path=here::here("pics/"),filename="apollo_gsea_out.weighted.CP.goodsamples_NESposonly.pdf",width=5.5,height=2.2)
+
+```
+
+Escarpment plot function
+```{r}
+library(ggfittext)
+
+lynall_escarpment_many <- function(gseaout, pathway, version, ymin=-0.3, ymax=-0.1, xmax=NULL){
+  if(!isS4(gseaout)){ # Sometimes I have already converted it to a dataframe
+    stop("Must be an S4 object")
+  }
+  leading <- gsub("/", " ", gseaout@result[gseaout@result$Description==pathway,"core_enrichment"])
+  print(leading)
+  if(is.null(xmax)){
+    xmax = max(gseaout@result$rank)
+  } else {
+    xmax = xmax
+  }
+  p <- gseaplot(gseaout, pathway, title=pathway, by="runningScore") + expand_limits(y=c(ymin, 0.1)) + geom_fit_text(data=data.frame(x=1,y=1), aes(ymin = ymin, ymax = ymax, xmin = 0, xmax = xmax, label = paste0("Leading edge:\n",leading)), reflow=TRUE)
+  print(p)
+  return(p)
+}
+```
+
+Figure 10B
+Escarpment plots for leading edge genes for interferon alpha and gamma pathways (SD vs. HC and CD19 vs WT)
+```{r}
+pathway <- "HALLMARK_INTERFERON_GAMMA_RESPONSE"
+p <- lynall_escarpment_many(gseaout, pathway, version="CD19vsWT", ymin = -0.4, xmax=23000)
+ggsave(p, path=here::here("pics/"), filename = paste0("escarpment_",pathway,"_","CD19vsWT",".pdf"))
+# And save the list
+write.table(strsplit(gseaout@result[gseaout@result$Description==pathway,"core_enrichment"],"/"), file=paste0(here::here("res/"),"leadingedge_",pathway,"_CD19vsWT.csv"), col.names = F, row.names = F)
+
+pathway <- "HALLMARK_INTERFERON_ALPHA_RESPONSE"
+p <- lynall_escarpment_many(gseaout, pathway, version="CD19vsWT", ymin = -0.4, xmax=23000)
+ggsave(p, path=here::here("pics/"), filename = paste0("escarpment_",pathway,"_","CD19vsWT",".pdf"))
+# And save the list
+write.table(strsplit(gseaout@result[gseaout@result$Description==pathway,"core_enrichment"],"/"), file=paste0(here::here("res/"),"leadingedge_",pathway,"_CD19vsWT.csv"), col.names = F, row.names = F)
+```
+
+Find leading edge genes overlapping between CD19 vs. WT and SD vs. HC and write (for underlined genes in Figure 10B)
+```{r}
+cd19vswt_ifna <- read.csv(here::here("res/leadingedge_HALLMARK_INTERFERON_ALPHA_RESPONSE_CD19vsWT.csv"), header = F) %>% pull(V1) %>% as.character()
+cd19vswt_ifng <- read.csv(here::here("res/leadingedge_HALLMARK_INTERFERON_GAMMA_RESPONSE_CD19vsWT.csv"), header = F) %>% pull(V1) %>% as.character()
+sdvshc_ifna <- read.csv(here::here("res/leadingedge_HALLMARK_INTERFERON_ALPHA_RESPONSE_SDvsHC.csv"), header = F) %>% pull(V1) %>% as.character()
+sdvshc_ifng <- read.csv(here::here("res/leadingedge_HALLMARK_INTERFERON_GAMMA_RESPONSE_SDvsHC.csv"), header = F) %>% pull(V1) %>% as.character()
+
+(ifna_intersect <- intersect(cd19vswt_ifna, sdvshc_ifna))
+
+(ifng_intersect <- intersect(cd19vswt_ifng, sdvshc_ifng))
+
+```
+
+```{r}
+sessionInfo()
+```
+
+

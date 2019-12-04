@@ -1,0 +1,218 @@
+
+This file debatches variables for the effect of cohort (for purposes of visualization and correlation plots) 
+- Box-Cox transform variables to make distribution more normal as necessary (not necessary for the rlog-transformed counts)
+- Debatch using limma
+- Inverse the Box-Cox transform. 
+
+Makes apollo_together.RData
+
+```{r}
+library(dplyr)
+library(magrittr)
+library(here)
+
+load(here("res/data_imp.R"))
+load(here("res/men_rld_libcorr.R")) # Rlogtransformed meningeal counts
+load(here("res/spl_rld.R")) # Rlogtransformed splenic counts
+load(here("res/counts_good_names_men.R")) # Meningeal count names
+load(here("res/counts_good_names_spl.R")) # Splenic count names
+load(here("res/selection.R")) # QCed cytokine data
+load(here("res/sel_labs.R")) # Cytokine labels
+
+library(DESeq2)
+# For counts, use men (libcorr counts) and splenic (SME) counts, raw.
+men_tmp <- as.data.frame(t(men_rld_libcorr))
+colnames(men_tmp) <- paste("lc_",colnames(men_tmp),sep="")
+colnames(men_tmp) %<>% gsub("\\+", "pos", .)
+colnames(men_tmp) %<>% gsub("\\-", "neg", .)
+men_counts <- colnames(men_tmp)
+men_tmp$name <- rownames(men_tmp)
+head(men_tmp)
+
+# fixed size factors
+spl_tmp <- as.data.frame(t(spl_rld))
+colnames(spl_tmp) <- paste("fix_",colnames(spl_tmp),sep="")
+spl_counts <- colnames(spl_tmp)
+spl_tmp$name <- rownames(spl_tmp)
+head(spl_tmp)
+
+# Remove + and - from names
+colnames(data_imp) %<>% gsub("\\+", "pos", .)
+colnames(data_imp) %<>% gsub("\\-", "neg", .)
+names(selection) <- gsub("\\-", "neg", names(selection))
+cytokines <- names(selection)
+
+all <- merge(data_imp, men_tmp, by="name",all=TRUE) 
+all <- merge(all, spl_tmp, by="name", all=TRUE) 
+
+# Splenic percentages added
+all$ly_cd25_of_helper <- (all$`ly_helper_Q2_CD62Lpos_CD25pos` + all$`ly_helper_Q1_CD62Lneg_CD25pos`) / all$ly_helper
+all$ly_cd25_of_cytotoxic <- (all$`ly_cytotoxic_Q2_CD62Lpos_CD25pos` + all$`ly_cytotoxic_Q1_CD62Lneg_CD25pos`) / all$ly_cytotoxic
+all$ly_cd69_of_helper <- (all$`ly_helper_Q6_CD62Lpos_CD69pos` + all$`ly_helper_Q5_CD62Lneg_CD69pos`) / all$ly_helper
+all$ly_cd69_of_cytotoxic <- (all$`ly_cytotoxic_Q6_CD62Lpos_CD69pos`+ all$`ly_cytotoxic_Q5_CD62Lneg_CD69pos`) / all$ly_cytotoxic
+all$ly_cd62l_of_helper <- (all$`ly_helper_Q6_CD62Lpos_CD69pos` + all$`ly_helper_Q7_CD62Lpos_CD69neg`) / all$ly_helper
+all$ly_cd62l_of_cytotoxic <- (all$`ly_cytotoxic_Q6_CD62Lpos_CD69pos`+ all$`ly_cytotoxic_Q7_CD62Lpos_CD69neg`) / all$ly_cytotoxic
+
+# The extra CD9 counts
+all$fix_sme_ly_IgDpos_cd9 <- all$fix_sme_ly_IgDpos*all$ly_cd9_of_igdpos # Need to make extra counts for fig
+all$fix_sme_ly_IgDpos_cd9neg <- all$fix_sme_ly_IgDpos*(1 - all$ly_cd9_of_igdpos)
+all$fix_sme_ly_IgDneg_cd9 <- all$fix_sme_ly_IgDneg*all$ly_cd9_of_igdneg 
+all$fix_sme_ly_IgDneg_cd9neg <- all$fix_sme_ly_IgDneg*(1 - all$ly_cd9_of_igdneg)
+all$fix_sme_ly_b_cd9 <- all$fix_sme_ly_IgDneg_cd9 + all$fix_sme_ly_IgDpos_cd9 
+
+spl_counts_extra <- c("fix_sme_ly_IgDpos_cd9","fix_sme_ly_IgDpos_cd9neg","fix_sme_ly_IgDneg_cd9","fix_sme_ly_IgDneg_cd9neg","fix_sme_ly_b_cd9")
+spl_counts_extra_names <- c("IgD^{'+'}*CD9^{'+'}~B~cells","IgD^{'+'}*CD9^{'-'}~B~cells","IgD^{'-'}*CD9^{'+'}~B~cells","IgD^{'-'}*CD9^{'-'}~B~cells","CD9^{'+'}~B~cells")
+
+beh_for_cor <- c("LD_x_10","OF_dis_10","OF_p_10") 
+
+splenic_percs <- c("ly_cd69_of_igdpos",
+                   "ly_cd69_of_igdneg",
+                   "ly_cd62l_of_igdpos",
+                   "ly_cd62l_of_igdneg",
+                   "ly_cd25_of_igdpos",
+                   "ly_cd25_of_igdneg",
+                   "ly_mhcii_of_igdpos",
+                   "ly_mhcii_of_igdneg",
+                   "my_cd86_of_b", 
+                   "my_cd86_of_cdcs_cd11bpos",
+                   "my_cd86_of_cdcs_cd11bneg",
+                   "my_cx3cr1_of_cdcs_cd11bpos",
+                   "my_cx3cr1_of_cdcs_cd11bneg",
+                   "my_cd103_of_cdcs_cd11bpos",
+                   "my_cd103_of_cdcs_cd11bneg",
+                   "my_cd68_of_f480macs",
+                   "my_cx3cr1_of_inflamm_mono",
+                   "ly_cd69_of_nk", 
+                   "ly_cd69_of_nkt",
+                   "ly_cd25_of_nk",
+                   "ly_cd25_of_nkt", 
+                   "ly_cd25_of_helper", 
+                   "ly_cd25_of_cytotoxic",
+                   "ly_cd69_of_helper",
+                   "ly_cd69_of_cytotoxic",
+                   "ly_cd62l_of_helper",
+                   "ly_cd62l_of_cytotoxic") 
+
+men_percs <- c("ben_upper_of_b","ben_cd69_of_b_both","ben_cd69_of_cytotoxic","ben_cd69_of_helper","ben_cd69_of_nk", "ben_mhcii_of_b_both","ben_cx3cr1_of_ly6cmono")
+
+```
+
+NAME EVERYTHING
+```{r}
+# THIS IS ESSENTIALLY WHERE DEFINE THE NAMES AND LEBELS
+features <- c(beh_for_cor, names(selection), men_counts, men_percs, spl_counts, splenic_percs, spl_counts_extra)
+
+forpls <- all[,c("strain", "cond", "coh",features)]
+sample_n(forpls,7)
+
+features.names <- c("Light-dark~crosses","Open~field~distance","Open~field~time~in~centre", 
+                  names(sel_labs),
+                  paste("Meningeal~",counts_good_names_men, sep=""),
+                  men_percs,
+                  paste("Splenic~",counts_good_names_spl,sep=""), 
+                  splenic_percs, 
+                  spl_counts_extra_names) # TODO; To improve perc names
+
+features.names[features.names=="ben_upper_of_b"] <- "'%'~CD45^{hi}~of~meningeal\nB~cells" 
+features.names[features.names=="ben_cd69_of_b_both"] <- "'%'~CD69^{'+'}~of~meningeal\nB~cells" 
+features.names[features.names=="ly_cd25_of_igdpos"] <- "'%'~CD25^{'+'}~of~splenic\nIgD^{'+'}~B~cells"
+features.names[features.names=="ly_cd25_of_helper"] <- "'%'~CD25^{'+'}~of~splenic\nT[helper]~cells"
+features.names[features.names=="ly_cd62l_of_helper"] <- "'%'~CD62L^{'+'}~of~splenic\nT[helper]~cells"
+features.names[features.names=="my_cx3cr1_of_inflamm_mono"] <- "'%'~CX3CR1^{'+'}~of~splenic\nLy6C^{hi}~monocytes"
+features.names[features.names=="ben_cx3cr1_of_ly6cmono"] <- "'%'~CX3CR1^{'+'}~of~meningeal\nLy6C^{hi}~monocytes"
+features.names[features.names=="my_cd103_of_cdcs_cd11bneg"] <- "'%'~CD103^{'+'}~of~splenic\nCD11b^{'-'}~cDCs"
+features.names[features.names=="ly_mhcii_of_igdpos"] <- "'%'~MHCII^{'+'}~of~splenic\nIgD^{'+'}~B~cells"
+features.names[features.names=="ly_mhcii_of_igdneg"] <- "'%'~MHCII^{'+'}~of~splenic\nIgD^{'-'}~B~cells"
+features.names[features.names=="ly_cd25_of_nk"] <- "'%'~CD25^{'+'}~of~splenic\nNK~cells"
+features.names[features.names=="ben_cd69_of_nk"] <- "'%'~CD69^{'+'}~of~meningeal\nNK~cells"
+features.names[features.names=="ly_cd69_of_nk"] <- "'%'~CD69^{'+'}~of~splenic\nNK~cells"
+
+# Make a proper set of labels
+feature_labels <- features.names
+names(feature_labels) <- features
+cbind(features,features.names) %>% knitr::kable()
+
+# Make a list of the non-count features to be box-coxed (counts are already rld-ed)
+features_notcounts <- features[!features %in% c(men_counts,spl_counts,spl_counts_extra)]
+
+rownames(forpls) <- all$name
+forpls$name <- NULL
+forpls$name.1 <- NULL
+
+```
+
+```{r}
+library(ggplot2)
+library(reshape2)
+library(caret)
+
+pp <- preProcess(forpls[,features_notcounts],method="BoxCox") # NOT box-coxing the counts as they have already had a rlogtransformation applied
+pppls <- predict(pp, forpls) # Make the box-coxed matrix
+# Lambdas are stored here: pp$bc$lc_men_helper$lambda. Note lambda is set to zero if within the fudge factor tolerance level (i.e. just a log transform)
+
+# See example transform
+i=6
+compare <- data.frame(subset=rownames(forpls), raw=forpls[,i], boxcox=pppls[,i])
+rownames(compare) <- compare$subset
+compare_long <- melt(compare, id.vars="subset")
+head(compare_long)
+ggplot(compare_long, aes(x=value, fill=variable)) + geom_density() + facet_wrap(~variable, scales="free") + ggtitle(colnames(forpls)[i])
+
+```
+
+Limma debatch for all features including counts
+```{r}
+coldata <- data.frame(row.names=rownames(pppls), cond = pppls$cond, strain=pppls$strain, coh=droplevels(pppls$coh))
+design <- model.matrix(~ strain*cond, data=coldata[,c("strain","cond")]) # Don't include cohort as this is the batch effect
+limma_tmp <- limma::removeBatchEffect(as.matrix(t(pppls[,features])), design=design, batch=droplevels(pppls$coh))
+limma_deb <- merge(pppls[,which(!colnames(pppls) %in% features)],t(limma_tmp),by="row.names",all=TRUE)
+rownames(limma_deb) <- limma_deb$Row.names
+limma_deb$Row.names <- NULL
+# Look at what limma has done
+cbind(limma_deb[,"ben_cd69_of_b_both"],pppls[,"ben_cd69_of_b_both"]) %>% head 
+cbind(limma_deb[,"lc_men_cytotoxic"],pppls[,"lc_men_cytotoxic"]) %>% head 
+# And what about for splenic counts where there were partial NA coefficients
+cbind(limma_deb[,"fix_sme_ly_IgDneg"],pppls[,"fix_sme_ly_IgDneg"]) %>% head 
+```
+
+INVERSE BOX-COX
+```{r}
+# Now do inverse box-cox
+invBoxCox <- function(x, bc){
+  print(bc)
+  lambda <- bc$lambda
+  fudge <- bc$fudge
+    if (lambda <= fudge & lambda >= -fudge){y=exp(x); print("Using Lambda = 0")} 
+    else if (lambda <= 1+fudge & lambda >= (1-fudge)){y=x; print("Not transforming")}
+    else {y=(lambda*x + 1)^(1/lambda); print("Inverse box-cox")}
+    return(y)
+}
+
+inv_limma_pls <- limma_deb # set up for changing
+
+for (i in 1:length(features_notcounts)){
+  feat = features_notcounts[i]
+  print(paste("NEXT feature for BoxCox inverse is",feat))
+  tmp <- pp$bc[feat]
+  x = invBoxCox(limma_deb[,feat],tmp[[1]])
+  inv_limma_pls[,feat] <- x
+  rm(x)
+}
+
+```
+
+Make list of counts changed in stress vs. homecage
+```{r}
+changed <-  c("lc_men_b_both","lc_men_ly6c.mono","fix_sme_ly_plasma","fix_sme_my_neutrophils", "fix_sme_my_f4_80_macs", "fix_sme_my_inflamm_mono","Mo.GnegCSF.54","ly_cd25_of_igdpos", "ly_mhcii_of_igdpos","ly_mhcii_of_igdneg","my_cd103_of_cdcs_cd11bneg", "my_cx3cr1_of_inflamm_mono","ly_cd69_of_nk","ly_cd25_of_nk","ly_cd25_of_helper","ly_cd62l_of_helper","ben_cd69_of_b_both","ben_cd69_of_nk", "ben_cx3cr1_of_ly6cmono")
+```
+
+Save variables
+```{r}
+setdiff(colnames(forpls),colnames(inv_limma_pls)) # Check names equivalent
+
+save(file=here("res/apollo_together.RData"), forpls, limma_deb, inv_limma_pls, beh_for_cor, cytokines, men_counts, spl_counts, spl_counts_extra, features, feature_labels, features.names, changed, splenic_percs, men_percs, features_notcounts, pppls)
+```
+
+```{r}
+sessionInfo()
+```

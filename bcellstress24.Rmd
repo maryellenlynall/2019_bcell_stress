@@ -1,0 +1,146 @@
+---
+title: "Generate annotations"
+output: html_document
+---
+
+Makes S7B
+
+# Setup
+```{r}
+library(ggplot2)
+library(kableExtra) 
+library(RColorBrewer)
+library(here)
+library(scran) # need for even basic stuff e.g. exprs(sce)
+library(scater)
+
+# Requires development version of tidyr
+# devtools::install_github("hadley/tidyr")
+
+```
+
+## Load
+```{r}
+load(paste0(here::here("res/"),"combi_clustered_leiden.R"))
+```
+
+
+Compare to previous clustering to see correspondence
+```{r}
+colData(combi)$cell <- rownames(colData(combi))
+combi$Annotation <- as.character(combi$Cluster) # Adjust this manually as go through
+
+```
+
+```{r}
+combi$Annotation[combi$Cluster==17] <- "Preneutrophils" 
+# Combine all neutrophil clusters.
+combi$Annotation[combi$Cluster %in% c("1","2","3","6","7","8")] <- "Neutrophils"
+combi$Annotation[combi$Cluster==26] <- "Erythrocytes"
+combi$Annotation[combi$Cluster==25] <- "pDCs"
+combi$Annotation[combi$Cluster==24] <- "Mast cells and others"
+combi$Annotation[combi$Cluster==10] <- "Monocytes NOS" 
+combi$Annotation[combi$Cluster==18] <- "Monocytes Ly6Chi" # Very high Ly6c2
+combi$Annotation[combi$Cluster==20] <- "Perivascular macrophage (Cd206)"
+combi$Annotation[combi$Cluster==9] <- "Border-associated macrophage" 
+combi$Annotation[combi$Cluster==19] <- "Pro B cells and other precursors"
+combi$Annotation[combi$Cluster==11] <- "Pre B cells"
+combi$Annotation[combi$Cluster==23] <- "Mature B cells 1"
+combi$Annotation[combi$Cluster==4] <- "Mature B cells 2"
+combi$Annotation[combi$Cluster==16] <- "T cells 1" 
+combi$Annotation[combi$Cluster==13] <- "T cells 2"
+combi$Annotation[combi$Cluster==15] <- "NK cells"
+combi$Annotation[combi$Cluster==14] <- "Fibroblasts and other"
+combi$Annotation[combi$Cluster==21] <- "Endothelial and others"
+combi$Annotation[combi$Cluster==22] <- "Olfactory neurons"
+combi$Annotation[combi$Cluster==12] <- "cDCs"
+combi$Annotation[combi$Cluster==5] <- "Microglia"
+```
+
+Remake clustering plot with annotations
+```{r}
+
+combi$Annotation <- factor(combi$Annotation, levels=c("Microglia","Preneutrophils",
+  "Neutrophils","Monocytes Ly6Chi","Monocytes NOS","Border-associated macrophage","Perivascular macrophage (Cd206)","cDCs","pDCs","Mast cells and others","Endothelial and others","Fibroblasts and other","Olfactory neurons","Pro B cells and other precursors","Pre B cells","Mature B cells 1","Mature B cells 2","T cells 1","T cells 2","NK cells","Erythrocytes" 
+), ordered=TRUE)
+```
+
+Now plot
+```{r}
+library(Seurat)
+seur <- as.Seurat(combi)
+Idents(seur) <- combi$Annotation
+p <- DimPlot(seur, label=TRUE, repel=TRUE, reduction="UMAP", cols = metadata(combi)$col_vector) + theme(aspect.ratio = 1)
+ggsave(p, filename = here::here("/pics/sc_tsne_umap_annotated_labels.pdf"), width=15, height=8)
+
+p <- DimPlot(seur, label=FALSE, reduction="UMAP", group.by = "cell_cycle")
+ggsave(p, filename = here::here("/pics/sc_umap_cell_cycle.pdf"), width=11, height=8)
+
+```
+
+Table of TF-IDF marker genes
+```{r}
+library(SoupX)
+markers_tfidf_ann <- quickMarkers(counts(combi), clusters=combi$Annotation)
+hist(markers_tfidf_ann$geneFrequency / markers_tfidf_ann$geneFrequencyOutsideCluster) # All positive
+
+# Make a kable
+# Generate n 1:10 for markers to allow pivoting
+markers_tfidf_ann$n <- rep(1:10, length(unique(markers_tfidf_ann$cluster)))
+# Pivot
+mini <- markers_tfidf_ann %>% dplyr::select(gene,cluster,n) %>% tidyr::pivot_wider(names_from="cluster", values_from="gene")
+
+library(magrittr)
+mini %<>% dplyr::select(-n)
+
+library(kableExtra)
+mini %>% kable(row.names = T, caption=paste0("Marker genes for each cluster")) %>% kable_styling(bootstrap_options = "striped",full_width = F)
+```
+
+Table of scran marker genes
+```{r}
+
+marker.detection <- function(sce, clusters, blocking = NULL) {
+  cur_markers <-
+    findMarkers(sce, clusters, block = blocking) # This defaults to "any" (i.e. up and down - the first named option). Does pairwisettests then combineMarkers
+  markers.spec <- lapply(cur_markers, function(n) {
+    if (!is.na(n$Top[1])) {
+      cur_n <-
+        n[n$FDR < 0.1 & # There are some significant changes
+            apply(as.matrix(n[, 4:ncol(n)]), 1, function(x) {
+              sum(x > 0) # There are other clusters to compare it to
+            }) == ncol(n) - 3,]
+      if (nrow(cur_n) > 0) {
+        cur_n$GeneName <- rownames(cur_n)
+      }
+    }
+    else{
+      cur_n <- NULL
+    }
+    cur_n
+  })
+}
+
+# Run the wrapper for find markers
+markers_scran <- marker.detection(combi, combi$Annotation, blocking = combi$Experiment)
+
+markers_scran_top10 <- sapply(markers_scran, function(x){x[1:10,]})
+markers_scran_top10 <- lapply(markers_scran_top10,as.data.frame)
+markers_scran_top10 <- dplyr::bind_rows(markers_scran_top10, .id = "column_label")
+library(magrittr)
+markers_scran_top10 %<>% dplyr::rename(gene = GeneName)
+markers_scran_top10 %<>% dplyr::rename(cluster = column_label)
+
+# kable
+markers_scran_top10$n <- rep(1:10, length(unique(markers_scran_top10$cluster)))
+# Pivot
+mini <- markers_scran_top10 %>% dplyr::select(gene,cluster,n) %>% tidyr::pivot_wider(names_from="cluster", values_from="gene")
+mini %<>% dplyr::select(-n)
+mini %>% kable(row.names = T, caption=paste0("Marker genes for each cluster (DE)")) %>% kable_styling(bootstrap_options = "striped",full_width = F)
+
+```
+
+```{r}
+saveRDS(combi,file=paste(here("res"), "combi_clustered_leiden_annotated.RDS", sep="/")) # 
+sessionInfo()
+```

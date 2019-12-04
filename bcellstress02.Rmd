@@ -1,0 +1,119 @@
+
+---
+title: "Cytokines"
+output: html_document
+---
+
+Process cytokine data: 
+- Impute at half lower limit of detection
+- Drop cytokines where >10% of readings are below LLD
+
+Makes data_imp.R
+
+```{r}
+
+library(ggplot2)
+library(cowplot)
+library(here)
+
+load(here("res/data_bred.R"))
+
+star <- function(pval) {
+  if (pval < 0.001) {
+		return("***")
+		}
+	if (pval < 0.01) {
+		return("**")
+		}		
+	if (pval < 0.05) {
+		return("*")
+	}
+  if (pval < 0.1) {
+		return("+")
+		}
+	else {return("")
+		}
+		}
+```
+
+
+```{r}
+# Columns with magpix cytokine data
+magpix.cols <- colnames(data_bred)[grep("Mo.",colnames(data_bred))]
+
+# Set undetectable cytokines to half lower limit of detection 
+# NB. Subsequent statistics are rank-based
+data_below <- data_bred
+data_below[,] <- 0
+# Make matrix of ones for where there is missing data
+data_below[,magpix.cols] <- apply(data_bred[,magpix.cols], 2, function(y) {ifelse(grepl("<", y), 1, 0)})
+
+# Make matrix where half the lower limit is imputed. The LLD for the plate follows the "<".
+data_imp <- data_bred
+data_imp[,magpix.cols] <- apply(data_imp[,magpix.cols], 2, function(y) {ifelse(grepl("<",y), as.numeric(sub("^.*<","",y))/2, as.numeric(y))}) 
+
+# Set threshold: proportion of cytokines data which must be above the LLD for that cytokine to be included in analysis
+prop_above_ll <- 0.9
+  
+# How many cytokines below threshold?
+tmp <- data_below[,magpix.cols]
+prop_detected <- apply(tmp,2,function(y){sum(y==0)})/dim(tmp)[1]
+selection <- prop_detected[prop_detected>prop_above_ll] 
+selection <- selection[!names(selection) %in% c("Mo.IL6_to_IL10_rank_ratio",NA)] # Drop this. Not a cytokine
+print(selection)
+
+# Save QCed cytokine selection
+save(selection, file=here("res/selection.R"))
+
+```
+
+Make nice labels :
+```{r}
+sel_labs <- names(selection)
+names(sel_labs)[sel_labs=="Mo.IL-1a.53"]  <- expression(paste("IL-1",alpha))
+names(sel_labs)[sel_labs=="Mo.IL-6.38"]  <- expression("IL*'-'*6")
+names(sel_labs)[sel_labs=="Mo.IL-12p40.76"]  <- expression(IL*'-'*12~p40) # Need squiggle for space
+names(sel_labs)[sel_labs=="Mo.IL-17A.72"]  <- expression(paste("IL17","A"))        
+names(sel_labs)[sel_labs=="Mo.Eotaxin.74"]  <- "CCL11"
+names(sel_labs)[sel_labs=="Mo.G-CSF.54"]  <- expression(G*'-'*CSF) 
+names(sel_labs)[sel_labs=="Mo.KC.57"]  <- "CXCL1"               
+names(sel_labs)[sel_labs=="Mo.MIP-1a.77"]  <- "CCL3"
+names(sel_labs)[sel_labs=="Mo.RANTES.55"]  <- "CCL5"            
+names(sel_labs)[sel_labs=="Mo.TNF-a.21"]  <- expression(paste("TNF-",alpha))
+print(sel_labs)
+save(sel_labs, file=here("res/sel_labs.R"))
+
+data_imp$Well <- NULL
+data_imp$Description <- NULL 
+
+# Remove factor ordering to permit linear model
+data_imp$Plate <- as.numeric(data_imp$Plate)
+data_imp$Plate <- factor(data_imp$Plate, ordered=FALSE)
+data_imp$strain <- factor(data_imp$strain, ordered=FALSE)
+data_imp$cond <- factor(data_imp$cond, ordered=FALSE)
+
+```
+
+SAVE
+```{r}
+save(list=c("data_imp", "prop_above_ll"), file=here("res/data_imp.R"))
+
+```
+
+```{r}
+sessionInfo()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

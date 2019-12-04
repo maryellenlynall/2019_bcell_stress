@@ -1,0 +1,407 @@
+
+Test effects of strain and condition on splenic median function marker expression and plots this as tile plots
+
+Makes Figure 2F and 5C
+
+```{r}
+library(here)
+library(flowCore)
+library(multcomp)
+library(tidyr)
+```
+
+Spleen cohorts only
+```{r}
+load(here("res/md.Rmd"))
+md <- md[!md$coh %in% c("r4","r9"),]
+md$coh <- droplevels(md$coh)
+```
+
+Load 50k live extravascular cells per splenic sample, plus the (manually gated) labels
+```{r}
+load(here("res/fcs_raw_qced_ly.Rmd"))
+load(here("res/labels.manual.qced_ly.Rmd"))
+load(here("res/fcs_raw_qced_my.Rmd"))
+load(here("res/labels.manual.qced_my.Rmd"))
+```
+
+```{r}
+# Put QCed data into holders
+load(here("res/fsc_empty_my.R"))
+load(here("res/fsc_empty_ly.R"))
+
+fcs_my <- fcs_empty_my
+for (i in 1:length(fcs_my)){
+ exprs(fcs_my[[i]]) <- fcs_raw_qced_short_my[[i]]  
+}
+
+fcs_ly <- fcs_empty_ly
+for (i in 1:length(fcs_ly)){
+ exprs(fcs_ly[[i]]) <- fcs_raw_qced_short_ly[[i]]  
+}
+
+```
+
+```{r}
+panel_fcs_my <- pData(flowCore::parameters(fcs_my[[1]]))
+panel_fcs_ly <- pData(flowCore::parameters(fcs_ly[[1]]))
+head(panel_fcs_my,9)
+head(panel_fcs_ly,9)
+panel_fcs_my$desc <- gsub("-", "_", panel_fcs_my$desc)
+panel_fcs_ly$desc <- gsub("-", "_", panel_fcs_ly$desc)
+
+print(panel_fcs_my$desc)
+print(panel_fcs_ly$desc)
+
+lineage_my <- c("CD45","CD11b","F4_80","CX3CR1","B220","Ly6C","CD11c","CD103","Ly6G","MHCII") 
+functional_my <- c("CD45","CD68","CX3CR1","CD103","CD86","MHCII","CD11b", "Ly6C") 
+lineage_ly <- c("CD45","CD11b","NK1p1","CD3","CD138","B220","IgD","CD4","MHCII","CD62L") 
+functional_ly <- c("CD45","CD69","CD25","MHCII", "CD9") 
+
+```
+
+Tidy data, dropping unused channels
+```{r}
+
+fcs_my <- fsApply(fcs_my, function(x){
+  colnames(x) <- panel_fcs_my$desc
+  expr <- exprs(x)
+  expr <- expr[, union(lineage_my, functional_my)]
+  exprs(x) <- expr
+  x
+})
+fcs_my
+
+fcs_ly <- fsApply(fcs_ly, function(x){
+  colnames(x) <- panel_fcs_ly$desc
+  expr <- exprs(x)
+  expr <- expr[, union(lineage_ly, functional_ly)]
+  exprs(x) <- expr
+  x
+})
+fcs_ly
+
+# Also make a matrix that is just the expression data 
+expr_ly <- fsApply(fcs_ly, exprs)
+expr_my <- fsApply(fcs_my, exprs)
+dim(expr_ly)
+dim(expr_my)
+
+# Do a 0 to 1 transformation of some expression data which will be useful for visualization purposes (uses 1st and 99th percentile)
+library(matrixStats)
+rng_ly <- colQuantiles(expr_ly, probs = c(0.01, 0.99))
+rng_my <- colQuantiles(expr_my, probs = c(0.01, 0.99))
+
+expr01_ly <- t((t(expr_ly) - rng_ly[, 1]) / (rng_ly[, 2] - rng_ly[, 1]))
+expr01_my <- t((t(expr_my) - rng_my[, 1]) / (rng_my[, 2] - rng_my[, 1]))
+
+expr01_ly[expr01_ly < 0] <- 0
+expr01_my[expr01_my < 0] <- 0
+expr01_ly[expr01_ly > 1] <- 1
+expr01_my[expr01_my > 1] <- 1
+
+```
+
+```{r}
+# Check the flowset is correctly ordered
+cbind(fsApply(fcs_ly,function(f) f@description$`$SRC`),md$sample_id) 
+cbind(fsApply(fcs_my,function(f) f@description$`$SRC`),md$sample_id) 
+
+sample_ids <- rep(md$sample_id, fsApply(fcs_ly, nrow))
+
+library(ggplot2)
+library(reshape2)
+
+```
+
+```{r}
+# Not downsampling further
+expr_ly_ds <- expr_ly
+expr_my_ds <- expr_my
+expr01_ly_ds <- expr01_ly
+expr01_my_ds <- expr01_my
+sample_ids_ds <- sample_ids
+
+```
+
+```{r}
+library(RColorBrewer)
+library(dplyr)
+library(plyr)
+
+# Convert labels to a long list
+labels.manual.qced.ly <- matrix(unlist(labels.manual.qced.short.ly, use.names = FALSE), ncol = 1, byrow = TRUE)
+labels.manual.qced.my <- matrix(unlist(labels.manual.qced.short.my, use.names = FALSE), ncol = 1, byrow = TRUE)
+```
+
+Compare median marker expression
+```{r}
+load(here::here("res/counts_good_names_spl.R"))
+
+## Define colors for conditions
+color_conditions <- c("#6A3D9A", "#FF7F00")
+names(color_conditions) <- levels(md$condition)
+color_strains <- c("light grey", "purple")
+names(color_strains) <- levels(md$strain)
+
+counts_table_my <- table(labels.manual.qced.my, sample_ids_ds) 
+counts_table_ly <- table(labels.manual.qced.ly, sample_ids_ds) 
+
+props_table_my <- t(t(counts_table_my) / colSums(counts_table_my)) * 100
+props_table_ly <- t(t(counts_table_ly) / colSums(counts_table_ly)) * 100
+
+counts_ly <- as.data.frame.matrix(counts_table_ly)
+counts_my <- as.data.frame.matrix(counts_table_my)
+props_ly <- as.data.frame.matrix(props_table_ly)
+props_my <- as.data.frame.matrix(props_table_my)
+
+## Get median marker expression per sample and cluster
+expr_median_sample_cluster_tbl_ly <- data.frame(expr_ly_ds[, functional_ly],
+  sample_id = sample_ids_ds, cluster = labels.manual.qced.ly) %>% dplyr::filter(cluster %in% counts_good_names_spl[1:7]) %>% 
+  group_by(sample_id, cluster) %>% 
+  summarize_all(funs(median)) # Drops bad cluster 15
+
+expr_median_sample_cluster_tbl_my <- data.frame(expr_my_ds[, functional_my],
+  sample_id = sample_ids_ds, cluster = labels.manual.qced.my) %>% dplyr::filter(cluster %in% counts_good_names_spl[8:15]) %>% 
+  group_by(sample_id, cluster) %>% 
+  summarize_all(funs(median)) 
+
+## Melt
+expr_median_sample_cluster_melt_ly <- melt(expr_median_sample_cluster_tbl_ly,
+  id.vars = c("sample_id", "cluster"), value.name = "median_expression",
+  variable.name = "antigen")
+expr_median_sample_cluster_melt_my <- melt(expr_median_sample_cluster_tbl_my,
+  id.vars = c("sample_id", "cluster"), value.name = "median_expression",
+  variable.name = "antigen")
+
+## Rearange so the rows represent clusters and markers
+expr_median_sample_cluster_ly <- dcast(expr_median_sample_cluster_melt_ly,
+  cluster + antigen ~ sample_id,  value.var = "median_expression")
+expr_median_sample_cluster_my <- dcast(expr_median_sample_cluster_melt_my,
+  cluster + antigen ~ sample_id,  value.var = "median_expression")
+rownames(expr_median_sample_cluster_ly) <- paste0(expr_median_sample_cluster_ly$cluster,
+  "_", expr_median_sample_cluster_ly$antigen)
+rownames(expr_median_sample_cluster_my) <- paste0(expr_median_sample_cluster_my$cluster,
+  "_", expr_median_sample_cluster_my$antigen)
+
+ggdf_my <- expr_median_sample_cluster_melt_my
+ggdf_ly <- expr_median_sample_cluster_melt_ly
+mm_my <- match(ggdf_my$sample_id, md$sample_id) # No longer the same for both
+mm_ly <- match(ggdf_ly$sample_id, md$sample_id)
+ggdf_ly$condition <- factor(md$condition[mm_ly], ordered=FALSE)
+ggdf_my$condition <- factor(md$condition[mm_my], ordered=FALSE)
+ggdf_ly$strain <- factor(md$strain[mm_ly])
+ggdf_my$strain <- factor(md$strain[mm_my])
+ggdf_ly$coh <- factor(md$coh[mm_ly])
+ggdf_my$coh <- factor(md$coh[mm_my])
+
+```
+
+Differential expression adapted from here:
+https://f1000research.com/articles/6-748/v2
+"We created a wrapper function differential_expression_wrapper that performs the differential analysis of marker expression. The user needs to specify a data frame expr_median with marker expression, where each column corresponds to a sample and each row to a cluster/marker combination. One can choose between fitting a regular linear model model = "lm" or a linear mixed model model = "lmer". The formula parameter must be adjusted adequately to the model choice. The wrapper function returns the non-adjusted and adjusted p-values for each of the specified contrasts K for each cluster/marker combination."
+```{r}
+
+differential_expression_wrapper <- function(expr_median, md, model = "lmer", formula, K){
+  fit_gaussian <- lapply(1:nrow(expr_median), function(i){
+    data_tmp <- data.frame(y = as.numeric(expr_median[i, md$sample_id]), md)
+    switch(model,
+      lmer = {
+        fit_tmp <- lmer(formula, data = data_tmp)
+      },
+      lm = {
+        fit_tmp <- lm(formula, data = data_tmp)
+      })
+    AICed <- AIC(fit_tmp) # There will be an AIC for each channel, each cluster
+    ## Fit contrasts one by one
+    print(coef(fit_tmp))
+    est_csd <- coef(fit_tmp)["conditioncsd"]
+    est_cd19 <- coef(fit_tmp)["straincd19"]
+    out <- apply(K, 1, function(k){
+      contr_tmp <- glht(fit_tmp, linfct = matrix(k, 1))
+      summ_tmp <- summary(contr_tmp)
+      pval <- summ_tmp$test$pvalues
+      return(pval)
+    })
+    return(list(out=out,AIC=AICed, est_csd=est_csd, est_cd19=est_cd19))
+  })
+  pvals <- do.call(rbind, lapply(fit_gaussian,`[[`,1))
+  AICs <- do.call(rbind, lapply(fit_gaussian,`[[`,2))
+  est_csd <- do.call(rbind, lapply(fit_gaussian,`[[`,3))
+  est_cd19 <- do.call(rbind, lapply(fit_gaussian,`[[`,4))
+  colnames(pvals) <- paste0("pval_", contrast_names)
+  rownames(pvals) <- rownames(expr_median)
+  names(AICs) <- rownames(expr_median)
+  names(est_csd) <- rownames(expr_median)
+  names(est_cd19) <- rownames(expr_median)
+  ## Adjust the p-values
+  adjp <- apply(pvals, 2, p.adjust, method = "BH")
+  colnames(adjp) <- paste0("adjp_", contrast_names)
+  return(list(pvals = pvals, adjp = adjp, AIC=AICs, est_csd=est_csd, est_cd19=est_cd19))
+}
+
+```
+
+```{r}
+
+normalization_wrapper <- function(expr, th = 2.5){
+  expr_norm <- apply(expr, 1, function(x){
+   sdx <- sd(x, na.rm = TRUE)
+    if(sdx == 0){
+     x <- (x - mean(x, na.rm = TRUE))
+    }else{
+     x <- (x - mean(x, na.rm = TRUE)) / sdx
+    }
+    x[x > th] <- th
+    x[x < -th] <- -th
+    return(x)
+  })
+  expr_norm <- t(expr_norm)
+}
+
+```
+
+Model effects of condition and cohort
+```{r}
+FDR_cutoff <- 0.05
+md$condition <- factor(md$condition, ordered=FALSE)
+
+formula_lm <- y ~ condition + coh
+
+model.matrix( ~ condition + coh, data = md)
+contrast_names <- c("CSDvsHC")
+k1 <- c(0,1,0,0,0,0)
+K <- matrix(k1, nrow = 1, byrow = TRUE, dimnames = list(contrast_names))
+K
+
+nocd19 <- md %>% dplyr::filter(strain=="wt") %>% dplyr::select(sample_id) %>% pull
+
+expr_median_nocd19_ly <- expr_median_sample_cluster_ly[,c("cluster","antigen",nocd19)]
+expr_median_nocd19_my <- expr_median_sample_cluster_my[,c("cluster","antigen",nocd19)]
+
+de_out_nocd19_ly <- differential_expression_wrapper(expr_median = expr_median_nocd19_ly,
+  md = md %>% dplyr::filter(strain=="wt"), model = "lm", formula = formula_lm, K = K)
+
+de_out_nocd19_my <- differential_expression_wrapper(expr_median = expr_median_nocd19_my,
+  md = md %>% dplyr::filter(strain=="wt"), model = "lm", formula = formula_lm, K = K)
+
+apply(de_out_nocd19_ly$adjp < FDR_cutoff, 2, table) 
+apply(de_out_nocd19_my$adjp < FDR_cutoff, 2, table) 
+
+de_output_nocd19_ly <- data.frame(expr_median_nocd19_ly,
+  de_out_nocd19_ly$pvals, de_out_nocd19_ly$adjp, de_out_nocd19_ly$est_csd, row.names = NULL)
+print(head(de_output_nocd19_ly), digits = 2)
+
+de_output_nocd19_my <- data.frame(expr_median_nocd19_my,
+  de_out_nocd19_my$pvals, de_out_nocd19_my$adjp, de_out_nocd19_my$est_csd, row.names = NULL)
+print(head(de_output_nocd19_my), digits = 2)
+
+```
+
+Model effects of strain and cohort in homecage animals
+```{r}
+FDR_cutoff <- 0.05
+md$strain <- factor(md$strain, ordered=FALSE)
+
+formula_lm <- y ~ strain + coh
+
+model.matrix( ~ strain + coh, data = md)
+contrast_names <- c("strain")
+k1 <- c(0,1,0,0,0,0)
+K <- matrix(k1, nrow = 1, byrow = TRUE, dimnames = list(contrast_names))
+K
+
+nocsd <- md %>% dplyr::filter(condition=="hc") %>% dplyr::select(sample_id) %>% pull
+
+expr_median_nocsd_ly <- expr_median_sample_cluster_ly[,c("cluster","antigen",nocsd)]
+expr_median_nocsd_my <- expr_median_sample_cluster_my[,c("cluster","antigen",nocsd)]
+
+de_out_nocsd_ly <- differential_expression_wrapper(expr_median = expr_median_nocsd_ly,
+  md = md %>% dplyr::filter(condition=="hc"), model = "lm", formula = formula_lm, K = K)
+
+de_out_nocsd_my <- differential_expression_wrapper(expr_median = expr_median_nocsd_my,
+  md = md %>% dplyr::filter(condition=="hc"), model = "lm", formula = formula_lm, K = K)
+
+apply(de_out_nocsd_ly$adjp < FDR_cutoff, 2, table) 
+apply(de_out_nocsd_my$adjp < FDR_cutoff, 2, table) 
+
+de_output_nocsd_ly <- data.frame(expr_median_nocsd_ly,
+  de_out_nocsd_ly$pvals, de_out_nocsd_ly$adjp, de_out_nocsd_ly$est_cd19, row.names = NULL)
+print(head(de_output_nocsd_ly), digits = 2)
+
+de_output_nocsd_my <- data.frame(expr_median_nocsd_my,
+  de_out_nocsd_my$pvals, de_out_nocsd_my$adjp, de_out_nocsd_my$est_cd19, row.names = NULL)
+print(head(de_output_nocsd_my), digits = 2)
+
+```
+
+Wrapper for heatmap of DE results
+```{r}
+plot_tilesize_heatmap <- function(de_out=NULL, adjp=NULL, filename=filename, width=8, height=10, fdr_blank=0.1, fdr_break=0.05, picpath=here::here("pics"), limits=c(-35,35), guides=TRUE){
+  cluster_labels <- de_out$cluster
+  ppp <- de_out[,-1]
+  eee <- adjp[,-1]
+  ppp[eee>=fdr_blank] <- NA
+  de_out_thh <- data.frame(cluster=cluster_labels, ppp)
+  ppp2 <- reshape2::melt(de_out_thh, id.vars="cluster")  
+  ppp2$padj <- reshape2::melt(adjp, id.vars="cluster")$value 
+  ppp2$thh <- "Not sig"
+  ppp2$thh[ppp2$padj<fdr_break] <- paste("p(adj)<",fdr_break,sep="")
+  ppp2$thh[ppp2$padj>=fdr_break & ppp2$padj<fdr_blank] <- paste("p(adj)<",fdr_blank,sep="")
+  ppp2$thh <- factor(ppp2$thh, levels=c("Not sig", paste("p(adj)<",fdr_blank,sep=""),paste("p(adj)<",fdr_break,sep="")), ordered=TRUE)
+  
+  if(!isTRUE(guides)){guiding = guides(fill=FALSE, size=FALSE)}
+  if(isTRUE(guides)){guiding = guides(fill=guide_colorbar(title="Coefficient"), size=guide_legend(title="Significance"))}
+  
+  print(head(ppp2))
+    #if (is.null(t_max)){t_max <- max(ppp)}
+  t_max <- max(ppp2$value, na.rm=TRUE)
+  print(t_max)
+  if(t_max<0){t_max=5}
+  print(t_max)
+  t_min <- min(ppp2$value, na.rm=TRUE)
+  print(t_min)
+  if(t_min>0){t_min=-5}
+  print(t_min)
+  eee <- adjp[,-1]
+  cols <- rev(c("#67001F","#B2182B","#F4A582","#F7F7F7","#92C5DE","#2166AC","#053061"))
+  p <- ggplot(ppp2, aes(x=variable, y=cluster, fill=value, size=thh)) + geom_point(shape=22) + scale_size_manual(values=c("Not sig"=0,"p(adj)<0.1"=3,"p(adj)<0.05"=6)) + scale_y_discrete(labels = parse(text=levels(ppp2$cluster))) + 
+    theme_minimal() + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust=0.5 ), legend.title = element_text(size=10)) + 
+    coord_fixed() +
+    scale_fill_gradientn(colours=cols, limits=limits) + xlab("") + ylab("") + guiding
+  ggsave(plot=p, path=picpath, filename=filename,width=width,height=height)
+  p
+}
+```
+
+Plot effects of stress in WT animals and effects of strain in homecage animals
+Makes Figure 2F, 5C
+```{r}
+
+de_out_nocd19_csd_ly <- spread(de_output_nocd19_ly[,c("cluster","antigen","conditioncsd")], antigen, conditioncsd)
+de_out_nocd19_csd_ly.adjp <- spread(de_output_nocd19_ly[,c("cluster","antigen","adjp_CSDvsHC")], antigen, adjp_CSDvsHC)
+de_out_nocsd_cd19_ly <- spread(de_output_nocsd_ly[,c("cluster","antigen","straincd19")], antigen, straincd19)
+de_out_nocsd_cd19_ly.adjp <- spread(de_output_nocsd_ly[,c("cluster","antigen","adjp_strain")], antigen, adjp_strain)
+
+de_out_nocd19_csd_my <- spread(de_output_nocd19_my[,c("cluster","antigen","conditioncsd")], antigen, conditioncsd)
+de_out_nocd19_csd_my.adjp <- spread(de_output_nocd19_my[,c("cluster","antigen","adjp_CSDvsHC")], antigen, adjp_CSDvsHC)
+de_out_nocsd_cd19_my <- spread(de_output_nocsd_my[,c("cluster","antigen","straincd19")], antigen, straincd19)
+de_out_nocsd_cd19_my.adjp <- spread(de_output_nocsd_my[,c("cluster","antigen","adjp_strain")], antigen, adjp_strain)
+
+plot_tilesize_heatmap(de_out=de_out_nocd19_csd_ly, adjp=de_out_nocd19_csd_ly.adjp, filename="apollo_de_out_nocd19_csd_ly_tile.pdf", width=1.95, height=4, fdr_blank=0.1, fdr_break=0.05, picpath=here::here("pics"), limits=c(-30,30), guides=FALSE)
+
+plot_tilesize_heatmap(de_out=de_out_nocd19_csd_ly, adjp=de_out_nocd19_csd_ly.adjp, filename="apollo_de_out_nocd19_csd_ly_tile_legend.pdf", width=3.2, height=4, fdr_blank=0.1, fdr_break=0.05, picpath=here::here("pics"), limits=c(-30,30), guides=TRUE)
+
+plot_tilesize_heatmap(de_out=de_out_nocd19_csd_my, adjp=de_out_nocd19_csd_my.adjp, filename="apollo_de_out_nocd19_csd_my_tile.pdf", width=4.1, height=4, fdr_blank=0.1, fdr_break=0.05, limits=c(-30,30), picpath=here::here("pics"))
+
+plot_tilesize_heatmap(de_out=de_out_nocsd_cd19_ly, adjp=de_out_nocsd_cd19_ly.adjp, filename="apollo_de_out_nocsd_cd19_ly_tile.pdf", width=1.95, height=4, fdr_blank=0.1, fdr_break=0.05, picpath=here::here("pics"), limits=c(-16,16), guides=FALSE)
+
+plot_tilesize_heatmap(de_out=de_out_nocsd_cd19_ly, adjp=de_out_nocsd_cd19_ly.adjp, filename="apollo_de_out_nocsd_cd19_ly_tile_legend.pdf", width=3.2, height=4, fdr_blank=0.1, fdr_break=0.05, picpath=here::here("pics"), limits=c(-16,16), guides=TRUE)
+
+plot_tilesize_heatmap(de_out=de_out_nocsd_cd19_my, adjp=de_out_nocsd_cd19_my.adjp, filename="apollo_de_out_nocsd_cd19_my_tile.pdf", width=4.1, height=4, fdr_blank=0.1, fdr_break=0.05, limits=c(-16,16),  picpath=here::here("pics"), guides=TRUE)
+```
+
+```{r}
+sessionInfo()
+```

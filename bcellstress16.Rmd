@@ -1,0 +1,31 @@
+---
+title: "Summarise transcript data to gene level"
+editor_options:
+  chunk_output_type: console
+---
+
+```{r}
+library(here)
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+
+samples <- read.csv("/Users/mary/dataraw/bulkrnaseq/20190408_cd19_nih_bulk_rnaseq/Miles_Herkenham_04042019-126734611/FASTQ_Generation_2019-04-05_04_19_58Z-172344788/samples.txt", header=F)
+quants <- sapply(samples,function(x){paste0("/Users/mary/dataraw/bulkrnaseq/20190408_cd19_nih_bulk_rnaseq/Miles_Herkenham_04042019-126734611/quants/",x,"_quant/quant.sf")})
+names(quants) <- dplyr::pull(samples)
+
+load(paste0(here::here("res/"),"tx2gene.RData"))
+
+library(tximport)
+# tximport imports transcript-level estimates and optionally summarizes abundances, counts, and transcript lengths to the gene-level (default)
+txi <- tximport(files=quants, type = "salmon", tx2gene = tx2gene, countsFromAbundance="lengthScaledTPM", ignoreTxVersion = T)
+
+txitranscripts <- tximport(files=quants, type = "salmon", ignoreTxVersion = T, txOut=TRUE, countsFromAbundance = "no") # Get straight counts of transcripts
+
+save(list=c("txi", "txitranscripts"), file = paste0(here::here("res/"),"apollo_txi_counts.R"))
+
+```
+
+```{r}
+sessionInfo()
+```

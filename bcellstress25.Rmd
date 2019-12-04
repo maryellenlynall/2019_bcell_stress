@@ -1,0 +1,256 @@
+---
+title: "Differential expression"
+output: html_document
+---
+
+- Makes Figure 4B (B cell cluster UMAP)
+- Makes Figure S8E (Adam 2017 stress genes)
+- Single cell - differential expression analysis
+
+```{r}
+library(ggplot2)
+library(kableExtra) 
+library(RColorBrewer)
+library(here)
+library(scran) 
+library(scater)
+library(magrittr)
+```
+
+Need to pick these once for whole document
+```{r}
+perc_thresh = 0.15 # Require 15% of cells to have some expression in order to include in differential expression analysis
+log2norm_thresh = 0
+```
+
+## Load
+```{r}
+combi <- readRDS(paste0(here::here("res/"),"combi_clustered_leiden_annotated.RDS"))
+load(here::here("res/sce.empty.R"))
+```
+
+Make Figure 4B - just the B cell clusters
+```{r}
+library(Seurat)
+bseur <- as.Seurat(combi[,combi$Annotation %in% c("Mature B cells 1","Mature B cells 2")])
+bseur$Annotation %<>% as.character()
+bseur$Annotation[bseur$Annotation=="Mature B cells 1"] <- "CD20hi B cells"
+bseur$Annotation[bseur$Annotation=="Mature B cells 2"] <- "MHCIIhi B cells"
+Idents(bseur) <- bseur$Annotation
+
+p <- DimPlot(bseur, label=F, reduction="UMAP", group.by = 'cond', shape.by = 'ident', cols=c("grey","dark red"), size=5) + scale_shape_manual(values=c(16,21))
+p
+ggsave(p, filename = here::here("/pics/apollo_sc_tsne_leiden_b_only_by_cond.pdf"), width=8, height=4)
+
+```
+
+
+## Figure S8E
+## Violin plots of stress genes. 
+```{r}
+# NB. Fosb not used as insufficient expression 
+p <- VlnPlot(bseur, features=c("Fos","Fosb","Jun","Jund","Junb"), split.by = 'cond', cols=c("grey","dark red"), ncol=5, pt.size=0.3, log=F, legend = 'right') + xlab("")
+ggsave(p, filename = here::here("/pics/apollo_bcell_fos_jun.pdf"), width=8, height=3)
+
+adam_top <- c("Fosb","Fos","Atf3","Il1b", "Cxcl10", "Cxcl2", "Nr4a3", "Nr4a1", "Cxcl1", "Arc", "Junb", "Cyr61", "Socs3", "Hc", "Zfp36", "Gadd45b", "Maff", "Rnd1", "Csrnp1","Btg2", "Egr1", "F3", "Gdf15", "Egr2", "Klf6", "Gem", "Jun", "Icam1", "Cldn4")
+test <- adam_top[adam_top %in% rownames(combi)][1:20] # Take top 20
+
+# Early response genes from Adam 2017: https://dev.biologists.org/content/144/19/3625?with-ds=yes&utm_source=TrendMD&utm_medium=cpc&utm_campaign=Development_TrendMD_1
+
+# Were any of these genes differentially expressed in stress vs control?
+bseur <- AddModuleScore(bseur, features=list(test), name=list(c("Adam2017")))
+p <- VlnPlot(bseur, features='Adam20171', split.by = 'cond',cols=c("grey","dark red"), pt.size=0.3, log=F) + ggtitle("Cell stress\nmodule score") + xlab("")
+ggsave(p, filename = here::here("/pics/apollo_bcell_adam2017_top20.pdf"), width=3, height=4)
+
+# wilcox test module score
+wilcox.test(bseur[,bseur$cond=="HC" & bseur$Annotation=="CD20hi B cells"]$Adam20171, bseur[,bseur$cond=="SD" & bseur$Annotation=="CD20hi B cells"]$Adam20171) # NOT SIG (W = 2589, p-value = 0.09872)
+wilcox.test(bseur[,bseur$cond=="HC" & bseur$Annotation=="MHCIIhi B cells"]$Adam20171, bseur[,bseur$cond=="SD" & bseur$Annotation=="MHCIIhi B cells"]$Adam20171) # NOT SIG (W = 16177, p-value = 0.09774)
+
+```
+
+## DE on basic clusters
+As per (Spermatogenesis Juvenile_DE Marioni)[https://github.com/MarioniLab/Spermatogenesis2018/blob/a4f8cca2bc6b14c543934ad840b65d11882bef32/Analysis/DE/Juveline_DE.Rmd]
+
+```{r}
+
+# Get emptydrops with any expression
+sce.ambient <- sce.empty[Matrix::rowSums(counts(sce.empty)) > 0,] 
+# 16379 emptydrops with at least one count
+
+rm(sce.empty)
+
+# Niels Eling Spermatogenesis DE function. 
+# *THIS IS SPECIFIC TO THE CONTRASTS IN THE FUNCTION*
+# There is to be no transformation of the counts themselves prior to edgeR
+#### DE between ambient profiles
+library(edgeR)
+DE.ambient <- function(sce.ambient, sample.names, lfc = 1, seed = 12345){
+  # Generate pseudo bulk replicates for each 10X run
+  set.seed(seed)
+  # Empty matrix, 5 columns per sample
+  mat <- matrix(data = NA, ncol = 5*length(unique(colData(sce.ambient)$group)), 
+                nrow = nrow(counts(sce.ambient)))
+  rownames(mat) <- rownames(counts(sce.ambient))
+  colnames(mat) <- paste(rep(unique(colData(sce.ambient)$group), each = 5), 1:5, sep = "_")
+  for(i in unique(colData(sce.ambient)$group)){
+    # I think this assigns each cell randomly to one of the pseudobulk samples
+    cur_sample <- sample(5, sum(colData(sce.ambient)$group == i), replace = TRUE)
+    cur_data <- counts(sce.ambient)[,colData(sce.ambient)$group == i]
+    for(j in 1:5){
+      mat[,paste(i, j, sep = "_")] <- Matrix::rowSums(cur_data[,cur_sample == j]) 
+    }
+  }
+  
+  # Perform differential testing, uses edgeR. See edgeR user guide here: https://www.bioconductor.org/packages/release/bioc/vignettes/edgeR/inst/doc/edgeRUsersGuide.pdf
+  # NOTE need to alter this depending on your design
+  # Make DGEList object from counts table
+  y <- DGEList(counts=mat,group=sapply(colnames(mat), function(n){unlist(strsplit(n, "_"))[1]}))
+  y <- calcNormFactors(y)
+  samp <- sapply(colnames(mat), function(n){unlist(strsplit(n, "_"))[1]})
+  design <- model.matrix(~samp)
+  print(design)
+  y <- estimateDisp(y,design)
+  
+  # glmQLFit replaces the chisquare approximation to likelihood ratio statistic with a quasi-likelihood F-test --> fewer false positives
+  fit <- glmQLFit(y,design)
+  print(fit)
+  # glmTreat performs sig testin with LFC thh (significantly greater than the THH *not* just the estimate being over the thh)
+  qlf1 <- glmTreat(fit,coef=3, lfc = lfc) # HC1 vs CSD  (equivalent to coef=3)
+  qlf2 <- glmTreat(fit,contrast=c(0,-1,1), lfc = lfc) # HC2 vs CSD
+  qlf3 <- glmTreat(fit,coef=2, lfc = lfc) # HC1 vs HC2
+
+  # Output
+  list(hc1 = topTags(qlf1, n = nrow(qlf1$table))$table,
+       hc2 = topTags(qlf2, n = nrow(qlf2$table))$table,
+       hvh = topTags(qlf3, n = nrow(qlf3$table))$table)
+}
+
+# PARAMETER: choose LFC thh here. 
+# Group 3 is the socially defeated sample
+cur_test <- DE.ambient(sce.ambient = sce.ambient, 
+                       sample.names = c("1","2","3"), lfc = 1)
+
+table(cur_test$hc1$FDR<0.1) 
+table(cur_test$hc2$FDR<0.1) 
+table(cur_test$hvh$FDR<0.1) 
+
+
+# What are the genes (ens)
+ambi2 <- cur_test$hc1[cur_test$hc1$FDR<0.1,] %>% rownames 
+ambi3 <- cur_test$hc2[cur_test$hc2$FDR<0.1,] %>% rownames 
+
+# Closer look at HC2 vs. CSD. 
+look <- cur_test$hc2[cur_test$hc2$FDR<0.1,]
+look$Symbol <- rownames(combi)[match(rownames(look), rowData(combi)$ID)]
+look %>% dplyr::select(logFC,Symbol)
+
+# Check whether empty drops show stress-related differential expression (ideally not)
+# Lcn2 - good, no DE in any contrast
+cur_test$hc1["ENSMUSG00000026822",]
+cur_test$hc2["ENSMUSG00000026822",]
+cur_test$hvh["ENSMUSG00000026822",]
+
+# Ngp - - good, no DE in any contrast
+cur_test$hc1["ENSMUSG00000032484",]
+cur_test$hc2["ENSMUSG00000032484",]
+cur_test$hvh["ENSMUSG00000032484",]
+
+# Show the relevant symbols. 
+rownames(combi)[rowData(combi)$ID %in% ambi2] %>% sort
+rownames(combi)[rowData(combi)$ID %in% ambi3] %>% sort 
+
+# Dropping anything DE in the CSD drops vs. either HC1 or HC2 sample
+amb_to_drop <- union(ambi2,ambi3)
+length(amb_to_drop) # Dropping 71 genes
+
+# Only keep genes that are not DE i.e. FDR>0.1 in DE ambient profiles from the main cell matrix
+sce <- combi[!rowData(combi)$ID %in% amb_to_drop,]
+write.table(rownames(combi)[rowData(combi)$ID %in% amb_to_drop], file = here::here("res/amb_to_drop.csv"), col.names = F, row.names = F) 
+save(amb_to_drop, file=here::here("res/amb_to_drop.R"))
+
+```
+
+Now drop the RBC cluster and save this version without erythrocytes and without problematic genes
+```{r}
+sce <- sce[,!sce$Annotation == "Erythrocytes"]
+save(sce, file = paste0(here::here("res/"),"sc_annotated.RData"))
+```
+
+Wilcox differential expression function
+```{r}
+wilcox_lynall_filter <- function(sce, cluster_choice, cond1="HC", cond2="SD", filter=FALSE, perc_thresh = 0.1, log2norm_thresh=0, renormalize=TRUE){
+    tmp <- sce[,sce$Annotation==cluster_choice]
+    
+    if (isTRUE(renormalize)){
+        head(sizeFactors(tmp))
+        sizeFactors(tmp) <- NULL
+        print("Renormalizing data")
+        sizeFactors(tmp) <- computeSumFactors(tmp, min.mean = 0.1, sf.out = TRUE) # All cells in single cluster
+        tmp <- normalize(tmp)
+        head(sizeFactors(tmp))
+    }
+
+    # log fold change
+    global.av <- Matrix::rowMeans(logcounts(tmp))
+    cond1.mean <- Matrix::rowMeans(logcounts(tmp)[, tmp$cond %in% cond1])
+    cond2.mean <- Matrix::rowMeans(logcounts(tmp)[, tmp$cond %in% cond2])
+    cond1.perc <- 100*Matrix::rowSums(logcounts(tmp)[, tmp$cond %in% cond1] > 0)/ncol(tmp[, tmp$cond %in% cond1]) # Percentage of cells in that group expressing
+    cond2.perc <- 100*Matrix::rowSums(logcounts(tmp)[, tmp$cond %in% cond2] > 0)/ncol(tmp[, tmp$cond %in% cond2])
+    lfc = cond2.mean - cond1.mean # I.e. LFC tells you what is higher in cond2
+    
+    if (filter==TRUE){
+        keep <- Matrix::rowSums(logcounts(tmp)>log2norm_thresh) > perc_thresh*ncol(logcounts(tmp))
+        forstats <- tmp[keep == TRUE, ]
+    } else {
+        unexpressed <- Matrix::rowSums(exprs(tmp)) == 0 # But note should usually wrap this function with some prefiltering for genes expressed in very few cells.
+        forstats <- tmp[unexpressed == FALSE, ]
+    }
+    
+    print(sprintf("%d cells in cluster %s. Testing differential expression in %d of %d genes.", ncol(tmp), cluster_choice, nrow(forstats), nrow(tmp)))
+
+    # wilcox test between conditions
+    w.out <-  unlist(lapply(rownames(forstats), function(x){
+        wilcox.test(logcounts(forstats)[x, ]~forstats$cond)$p.value
+    }))
+    #multiple testing correction
+    fdr = p.adjust(w.out, method='BH')
+    
+    stats <- data.frame("gene" = as.character(rownames(forstats)), "wilcoxed"=TRUE, "p_val" = w.out, "fdr_p_val" = fdr, stringsAsFactors=FALSE)
+    
+    df <- data.frame("cluster" = cluster_choice, "gene" = as.character(rownames(tmp)), "global_average" = global.av, "mean_cond1" = cond1.mean, "mean_cond2" = cond2.mean, "perc_cond1" = cond1.perc, "perc_cond2" = cond2.perc, "LFC" = lfc, "absLFC" = abs(lfc), stringsAsFactors=FALSE)
+
+    df <- dplyr::left_join(df, stats, by="gene")
+    
+    colnames(df)[colnames(df)=="mean_cond1"] <- paste0("mean_",cond1)
+    colnames(df)[colnames(df)=="mean_cond2"] <- paste0("mean_",cond2)
+    colnames(df)[colnames(df)=="perc_cond1"] <- paste0("perc_",cond1)
+    colnames(df)[colnames(df)=="perc_cond2"] <- paste0("perc_",cond2)
+    df <- df[order(df$fdr_p_val, decreasing = FALSE), ]
+    return(df)
+}
+```
+
+# Differential expression: Wilcox test, prefiltered
+```{r}
+out_b2 <- wilcox_lynall_filter(sce, cluster_choice="Mature B cells 2", cond1="HC", cond2="SD", filter=TRUE, perc_thresh = perc_thresh, log2norm_thresh=log2norm_thresh, renormalize=TRUE)
+out_b1 <- wilcox_lynall_filter(sce, cluster_choice="Mature B cells 1", cond1="HC", cond2="SD", filter=TRUE, perc_thresh = perc_thresh, log2norm_thresh=log2norm_thresh, renormalize=TRUE)
+
+out_b2 %>% dplyr::filter(fdr_p_val<0.1) 
+out_b1 %>% dplyr::filter(fdr_p_val<0.1)
+```
+
+Make a dataframe with all the wilcox DE genes
+```{r}
+library(parallel)
+mc_cores <- detectCores()
+deout <- mclapply(unique(sce$Annotation), function(x){
+  wilcox_lynall_filter(sce, cluster_choice=x, cond1="HC", cond2="SD", filter=TRUE, perc_thresh = perc_thresh, log2norm_thresh = log2norm_thresh) 
+}, mc.cores = mc_cores)
+
+save(list=c("deout", "out_b1","out_b2","log2norm_thresh","perc_thresh"), file = paste0(here::here("res/"),"sc_deout_leiden_",log2norm_thresh,"_perc",perc_thresh,".R"))
+
+```
+
+```{r}
+sessionInfo()
+```

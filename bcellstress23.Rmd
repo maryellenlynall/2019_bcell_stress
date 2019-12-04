@@ -1,0 +1,200 @@
+---
+title: "leiden clustering"
+output: html_document
+---
+Running the python leiden via TomKelly's R reticulate accessor 
+Requires python package to be installed.
+
+This runs on from exp042_008a (cell cycle)
+
+```{r}
+library(igraph)
+library(here)
+library(scater)
+library(scran)
+library(Seurat) # Use development version to allow random.seed from leiden clustering to work.
+
+source(here::here("scripts","functions_lynall.R"))
+
+```
+
+Load single cell object "combi", rename
+```{r}
+
+load(here("res/mnn.R")) # Load combi and sce_reconstucted
+
+rowData(combi)$uniquified <- uniquifyFeatureNames(names=rowData(combi)$Symbol, ID=rowData(combi)$ID)
+
+rownames(combi) <- rowData(combi)$uniquified
+
+rowData(combi)[,c("Symbol","uniquified")][which(!rowData(combi)$uniquified %in% rowData(combi)$Symbol),] # Features uniquified
+
+```
+
+
+```{r}
+endog_genes <- !rowData(combi)$is_feature_control
+table(endog_genes, useNA="ifany")
+```
+
+Using Seurat to access leidenalg
+```{r}
+# Run leiden clustering
+# Resolution parameter tunes the number of clusters. 
+library(Seurat)
+seur <- as.Seurat(combi)
+seur <- FindNeighbors(seur, reduction = "MNN", dims=1:50) # All dimensions of MNN. 
+seur <- FindClusters(seur, algorithm = 4, resolution = 4, random.seed=12345) 
+head(seur@meta.data$seurat_clusters)
+table(seur@meta.data$seurat_clusters)
+
+p <- DimPlot(seur, label=TRUE, repel=TRUE, reduction="TSNE", cols = metadata(combi)$col_vector)
+ggsave(p, filename = here::here("/pics/sc_tsne_leiden_annotated_numbered.pdf"), width=10, height=8)
+
+p <- DimPlot(seur, label=TRUE, repel=TRUE, reduction="UMAP", cols = metadata(combi)$col_vector)
+ggsave(p, filename = here::here("/pics/sc_umap_leiden_annotated_numbered.pdf"), width=10, height=8)
+
+# Put back onto object
+colData(combi)$Leiden <- seur@meta.data$seurat_clusters
+colData(combi)$Cluster <- as.factor(colData(combi)$Leiden)
+
+```
+
+```{r}
+
+library(RColorBrewer)
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual' & brewer.pal.info$colorblind == T,]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+metadata(combi)$col_vector <- col_vector
+
+```
+
+2 marker strategies:
+1) TF-IDF
+2) Scran
+
+## Get TF-IDF cluster markers
+```{r}
+#devtools::install_github("constantAmateur/SoupX")
+library(SoupX)
+markers_tfidf <- quickMarkers(counts(combi), clusters=combi$Leiden)
+write.csv(markers_tfidf, file = here("/res/markers_tfidf.csv"))
+
+p <- lynall_pheatmap(dataset = combi, markers = markers_tfidf, show_pdata = c("pct_counts_Mito","cell_cycle")) 
+save_pheatmap(p,filename=here("pics/markers_tfidf_pheat.png"),height=3500,width=1000)
+```
+
+```{r}
+
+p <- plotTSNE(combi, colour_by="Cluster") + scale_fill_manual(values=metadata(combi)$col_vector)
+u <- plotUMAP(combi, colour_by="Cluster") + scale_fill_manual(values=metadata(combi)$col_vector) 
+ggsave(p, filename = here::here("/pics/sc_tsne_leiden.pdf"), width=10, height=8)
+ggsave(u, filename = here::here("/pics/sc_umap_leiden.pdf"), width=10, height=8)
+
+# Plot highlighting each cluster by number 
+library(viridis)
+cluster.plot <- lapply(as.list(sort(unique(combi$Cluster))), function(n) {
+        print(as.character(n))
+        ggplot(data = data.frame(
+        tSNE1 = reducedDims(combi)$TSNE[, 1],
+        tSNE2 = reducedDims(combi)$TSNE[, 2],
+        Cluster = combi$Cluster==n)) +
+        geom_point(aes(tSNE1, tSNE2, colour = Cluster), size = 0.5) +
+        theme(
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_text(size = 12, face = "bold"),
+        plot.title = element_text(
+        size = 16,
+        face = "bold",
+        hjust = 0.5
+        ),
+        line = element_blank()
+        ) + guides(colour=FALSE) +
+        ggtitle(n)
+    })
+    
+    
+library(cowplot)
+together <- plot_grid(plotlist = cluster.plot, ncol = 4)
+save_plot(together, filename = here::here("pics/sc_each_cluster_tsne.pdf"), base_width = 20, base_height = 27)
+```
+
+
+## Get scran marker genes 
+```{r}
+library(scran)
+#### Find specific marker genes. Marioni lab code from spermatogenesis 2018 paper: https://github.com/MarioniLab/Spermatogenesis2018
+
+# This function does findMarkers and selects those with FDR<0.1
+marker.detection <- function(sce, clusters, blocking = NULL) {
+  # User scran function findMarkers to perform differential expression
+  cur_markers <-
+    findMarkers(sce, clusters, block = blocking) # This defaults to "any" (i.e. up and down - the first named option). Does pairwisettests then combineMarkers
+  markers.spec <- lapply(cur_markers, function(n) {
+    if (!is.na(n$Top[1])) {
+      cur_n <-
+        n[n$FDR < 0.1 & # There are some significant changes
+            apply(as.matrix(n[, 4:ncol(n)]), 1, function(x) {
+              sum(x > 0) # There are other clusters to compare it to
+            }) == ncol(n) - 3,]
+      if (nrow(cur_n) > 0) {
+        cur_n$GeneName <- rownames(cur_n)
+
+      }
+    }
+    else{
+      cur_n <- NULL
+    }
+    cur_n
+  })
+}
+
+# Run the wrapper for find markers
+markers_scran <- marker.detection(combi, combi$Cluster, blocking = combi$Experiment)
+
+markers_scran_top10 <- sapply(markers_scran, function(x){x[1:10,]})
+markers_scran_top10 <- lapply(markers_scran_top10,as.data.frame)
+markers_scran_top10 <- dplyr::bind_rows(markers_scran_top10, .id = "column_label")
+library(magrittr)
+markers_scran_top10 %<>% dplyr::rename(gene = GeneName)
+markers_scran_top10 %<>% dplyr::rename(cluster = column_label)
+
+p <- lynall_pheatmap(dataset = combi, markers = markers_scran_top10, show_pdata = c("pct_counts_Mito","cell_cycle")) 
+
+save_pheatmap(p,filename=here("pics/markers_scran_pheat.png"),height=4400,width=1000) 
+
+```
+
+Make seurat version for VlnPlot
+```{r}
+library(Seurat)
+seur <- as.Seurat(combi)
+Idents(seur) <- combi$Cluster
+```
+
+Violin plot for scran markers (using Seur VlnPlot)
+```{r}
+
+# Top 2 marker genes for each cluster
+top2 <- as.vector(sapply(markers_scran, function(x){x[1:2,"GeneName"]}))
+
+out <- marker_violin(seur=seur, markers=top2, pal=metadata(combi)$col_vector)
+
+library(cowplot)
+g <- plot_grid(plotlist=out, ncol=length(out), align = "hv")
+save_plot(g, filename = here("pics/sc_leiden_top2.png"), base_width = 38, base_height = 15)
+
+```
+
+Save
+```{r}
+save(list=c("combi","markers_scran","markers_tfidf"),file=paste(here("res"), "combi_clustered_leiden.R", sep="/"))
+```
+
+```{r}
+sessionInfo()
+```

@@ -1,0 +1,218 @@
+---
+title: "Cytokines"
+output: html_document
+---
+
+Makes the cytokine plots
+Statistic use non-debatched data - Rfit rank-based linear model including cohort plus either strain or condition.
+Visualization uses debatched data
+
+Makes:
+- Figure S3B
+- Figure S9A
+
+```{r}
+library(ggplot2)
+library(here)
+library(tidyverse)
+library(magrittr)
+
+load(here("res/data_imp.R")) # Non-debatched data
+load(here("res/apollo_together.RData")) # Debatched data
+
+prop_above_ll <- 0.9
+
+colnames(data_imp) %<>% gsub("\\+", "pos", .)
+colnames(data_imp) %<>% gsub("\\-", "neg", .)
+
+inv_pls <- inv_limma_pls 
+deb <- limma_deb
+
+star <- function(pval) {
+  if (pval < 0.001) {
+		return("***")
+		}
+	if (pval < 0.01) {
+		return("**")
+		}		
+	if (pval < 0.05) {
+		return("*")
+	}
+  #if (pval < 0.1) {
+	#	return("+")
+	#	}
+	else {return("")
+		}
+		}
+
+options(scipen=100, digits=6)
+
+```
+
+
+For cytokines, check conditions and strains were balanced across plates
+```{r}
+print("Is plate confounded with strain, condition or cohort?")
+glm_fit <- glm(family=binomial, data=data_imp, Plate ~ strain + cond + factor(coh))
+summary(glm_fit) # Not confounded
+car::Anova(glm_fit, type="2")
+```
+
+Homecage CD19 vs. WT plots
+```{r}
+library(grid)
+
+cytokine_labels <- feature_labels[names(feature_labels) %in% cytokines]
+
+library(Rfit)
+ps <- vector(length=length(cytokines))
+ps_fits <- list()
+for (i in 1:length(cytokines)){
+  subset <- forpls[forpls$cond=="hc",c("strain","coh",cytokines[i])]
+  colnames(subset)[3] <- "value"
+  subset$coh <- droplevels(subset$coh)
+  tmp <- rfit(value ~ strain + coh, data=subset) 
+  print(summary(tmp)$coefficients)
+  ps[i] <- summary(tmp)$coefficients["straincd19","p.value"]
+  ps_fits[[i]] <- tmp
+}
+ps_selection_adj_rfit <- p.adjust(ps,method="BH")
+
+print("P and adjusted P for effect of strain")
+print(cbind(cytokines,signif(ps,3),signif(ps_selection_adj_rfit,3)))
+
+# Check an example fit
+rf <- ps_fits[[9]]
+plot(fitted.values(rf), rstudent(rf)); abline(h = c(-2, 2)) 
+qqnorm(residuals(rf)); qqline(residuals(rf)) 
+
+```
+
+Plot effects of CD19 deficiency on cytokine levels (in homecage animals)
+```{r}
+
+# Graph of boxplots
+plotCytokines <- function(i=NULL, data=NULL, labs=NULL, p_raw=NULL, p_adj=NULL, show=NULL){
+    name <- names(labs[i])
+    label <- labs[i]
+    subset <- data.frame(strain=data[data$cond=="hc","strain"], choice=data[data$cond=="hc",name])
+    ifelse(is.null(p_adj), siggy <- paste("p=",signif(p_raw[i],1),sep=""), siggy <- paste("p(adj)=",signif(p_adj[i],1),sep=""))
+    ifelse(is.null(p_adj), starry <- star(p_raw[i]), starry <- star(p_adj[i]))
+    ifelse(is.null(show), showadd <- textGrob(siggy, x = 0.25, y = 0.9, just="centre"), showadd <- textGrob(starry, x = 0.5, y = 0.95, just="centre", gp=gpar(fontsize=20)))
+    ggplot(data=subset, aes(x=strain, y=choice)) + geom_jitter(width=0.15, shape=16) + stat_summary(fun.y=median, fun.ymin = median, fun.ymax = median, geom = "crossbar", width = 0.5, colour="red") + 
+    ggtitle(parse(text=label)) + 
+    xlab("") + ylab("") + theme_bw() + theme(axis.text.x=element_blank()) +
+    annotation_custom(showadd, xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf) 
+}
+
+# Graph of points + horizontal bar
+plotCytokines2 <- function(i=NULL, data=NULL, labs=NULL, p_raw=NULL, p_adj=NULL, show=NULL, cols=NULL){
+    name <- names(labs[i])
+    label <- labs[i]
+    subset <- data.frame(strain=data[data$cond=="hc","strain"], choice=data[data$cond=="hc",name])
+    ylim1 = boxplot.stats(subset$choice)$stats[c(1, 5)] 
+    ifelse(is.null(p_adj), siggy <- paste("p=",signif(p_raw[i],1),sep=""), siggy <- paste("p(adj)=",signif(p_adj[i],1),sep=""))
+    ifelse(is.null(p_adj), starry <- star(p_raw[i]), starry <- star(p_adj[i]))
+    ifelse(is.null(show), showadd <- textGrob(siggy, x = 0.25, y = 0.9, just="centre"), showadd <- textGrob(starry, x = 0.5, y = 0.95, just="centre", gp=gpar(fontsize=20)))
+    ggplot(data=subset, aes(x=strain, y=choice, fill=strain)) + 
+    ggtitle(parse(text=label)) + 
+    xlab("") + ylab("") +
+    geom_boxplot(outlier.shape=NA) + guides(fill=FALSE) + scale_fill_manual(values = cols) + ylim(limits=1.05*ylim1) +
+    annotation_custom(showadd, xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf) +
+      scale_x_discrete(labels=c(parse(text="WT"),parse(text="CD19^{'-/-'}"))) +
+      theme_bw() + 
+  theme(axis.title=element_text(size=20), axis.text.y=element_text(size=14), axis.text.x=element_blank(), plot.title=element_text(size=20))
+}
+
+# Test
+plotCytokines(data=inv_pls, i=2, labs=cytokine_labels, p_raw=ps, p_adj=NULL)
+plotCytokines2(data=inv_pls, i=2, labs=cytokine_labels, p_raw=ps, p_adj=NULL, cols=c("light grey","dark green"))
+
+library(gridExtra)
+library(cowplot)
+p <- list(); p2 <- list(); p3 <- list(); p4 <- list()
+
+# Make plots using the debatched data with stats from the Rfit models
+for (i in 1:length(names(cytokine_labels))){
+  p2[[i]] <- plotCytokines(data=inv_pls, i=i, labs=cytokine_labels, p_adj=ps_selection_adj_rfit, p_raw=ps)
+  p3[[i]] <- plotCytokines2(data=inv_pls, i=i, labs=cytokine_labels, p_adj=ps_selection_adj_rfit, p_raw=ps, show="starry", cols=c("light grey","dark green"))
+  p4[[i]] <- plotCytokines2(data=inv_pls, i=i, labs=cytokine_labels, p_adj=ps_selection_adj_rfit, p_raw=ps, cols=c("light grey","dark green"))
+}
+
+# Figures S9A
+g <- do.call(grid.arrange,c(p3, ncol=length(names(cytokine_labels))))
+save_plot(filename = paste("apollo_deb_cytokines_hc_prop_above_ll_padj_box",prop_above_ll,".pdf",sep=""), g, path=here("pics"), base_width=1.7*length(names(cytokine_labels)), base_height=3)
+
+g <- do.call(grid.arrange,c(p4, ncol=length(names(cytokine_labels))))
+save_plot(filename = paste("deb_cytokines_hc_prop_above_ll_padj_num_box",prop_above_ll,".pdf",sep=""), g, path=here("pics"), base_width=2.5*length(names(cytokine_labels)), base_height=4)
+
+```
+
+Stats and plots for HC vs. SD (in WT animals)
+```{r}
+ps <- vector(length=length(cytokines))
+for (i in 1:length(cytokines)){
+  subset <- forpls[forpls$strain=="wt",c("cond","coh",cytokines[i])]
+  colnames(subset)[3] <- "value"
+  subset$coh <- droplevels(subset$coh)
+  tmp <- rfit(value ~ cond + coh, data=subset)
+  print(summary(tmp)$coefficients)
+  ps[i] <- summary(tmp)$coefficients["condcsd","p.value"]
+}
+ps_selection_adj_rfit <- p.adjust(ps,method="BH")
+print("P and adjusted P for effect of condition")
+print(cbind(cytokines,signif(ps,3),signif(ps_selection_adj_rfit,3)))
+
+plotCytokines <- function(i=NULL, data=NULL, labs=NULL, p_raw=NULL, p_adj=NULL, show=NULL){
+    name <- names(labs[i])
+    label <- labs[i]
+    subset <- data.frame(cond=data[data$strain=="wt","cond"], choice=data[data$strain=="wt",name])
+    ifelse(is.null(p_adj), siggy <- paste("p=",signif(p_raw[i],1),sep=""), siggy <- paste("p(adj)=",signif(p_adj[i],1),sep=""))
+    ifelse(is.null(p_adj), starry <- star(p_raw[i]), starry <- star(p_adj[i]))
+    ifelse(is.null(show), showadd <- textGrob(siggy, x = 0.25, y = 0.9, just="centre"), showadd <- textGrob(starry, x = 0.5, y = 0.95, just="centre", gp=gpar(fontsize=20)))
+    ggplot(data=subset, aes(x=cond, y=choice)) + geom_jitter(width=0.15, shape=16) + stat_summary(fun.y=median, fun.ymin = median, fun.ymax = median, geom = "crossbar", width = 0.5, colour="red") +
+      theme_bw() + theme(axis.text.x=element_blank()) +
+    ggtitle(parse(text=label)) + 
+    xlab("") + ylab("") +
+      annotation_custom(showadd, xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf)
+}
+
+plotCytokines2 <- function(i=NULL, data=NULL, labs=NULL, p_raw=NULL, p_adj=NULL, show=NULL, cols=NULL){
+    name <- names(labs[i])
+    label <- labs[i]
+    subset <- data.frame(cond=data[data$strain=="wt","cond"], choice=data[data$strain=="wt",name])
+    ylim1 = boxplot.stats(subset$choice)$stats[c(1, 5)]
+    ifelse(is.null(p_adj), siggy <- paste("p=",signif(p_raw[i],1),sep=""), siggy <- paste("p(adj)=",signif(p_adj[i],1),sep=""))
+    ifelse(is.null(p_adj), starry <- star(p_raw[i]), starry <- star(p_adj[i]))
+    ifelse(is.null(show), showadd <- textGrob(siggy, x = 0.25, y = 0.9, just="centre"), showadd <- textGrob(starry, x = 0.5, y = 0.95, just="centre", gp=gpar(fontsize=20)))
+    ggplot(data=subset, aes(x=cond, y=choice, fill=cond)) + 
+    ggtitle(parse(text=label)) + 
+    geom_boxplot(outlier.shape=NA) + guides(fill=FALSE) + scale_fill_manual(values = cols) + ylim(limits=1.05*ylim1) +
+    xlab("") + ylab("") +
+    annotation_custom(showadd, xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf) +
+      scale_x_discrete(labels=c("HC",parse(text="Stress"))) +
+  
+      theme_bw() + theme(axis.title=element_text(size=20), axis.text.y=element_text(size=14), axis.text.x=element_blank(), plot.title=element_text(size=20))
+}
+
+library(gridExtra)
+p <- list(); p2 <- list(); p3 <- list(); p4 <- list()
+for (i in 1:length(cytokines)){
+  p[[i]] <- plotCytokines(data=inv_pls, i=i, labs=cytokine_labels, p_adj=ps_selection_adj_rfit, p_raw=ps, show="starry") # Choosing adjusted
+  p2[[i]] <- plotCytokines(data=inv_pls, i=i, labs=cytokine_labels, p_adj=ps_selection_adj_rfit, p_raw=ps) # Choosing adjusted with numbers
+  p3[[i]] <- plotCytokines2(data=inv_pls, i=i, labs=cytokine_labels, p_adj=ps_selection_adj_rfit, p_raw=ps, show="starry", cols=c("light grey","red")) # Choosing adjusted
+  p4[[i]] <- plotCytokines2(data=inv_pls, i=i, labs=cytokine_labels, p_adj=ps_selection_adj_rfit, p_raw=ps, cols=c("light grey","red")) # Choosing adjusted with numbers
+}
+
+g <- do.call(grid.arrange,c(p2, ncol=length(cytokines)))
+save_plot(filename = paste("deb_cytokines_wt_prop_above_ll_padj_num", prop_above_ll,".pdf",sep=""), g, path=here("pics"), base_width=1.7*length(cytokines), base_height=3)
+
+# Figure S3B
+g <- do.call(grid.arrange,c(p3, ncol=length(cytokines)))
+save_plot(filename = paste("apollo_deb_cytokines_wt_prop_above_ll_padj_box", prop_above_ll,".pdf",sep=""), g, path=here("pics"), base_width=1.7*length(cytokines), base_height=3)
+
+```
+
+```{r}
+sessionInfo()
+```

@@ -1,0 +1,228 @@
+---
+title: "Meninges: automated clustering"
+output: html_document
+---
+
+Extracts meningeal flow data from FlowJo workspaces and FCS files, QCs, then saves.
+Run 17th April 2018 under bioconductor version 3.6 (unlike all other scripts in this project); flowAI version 1.6.3
+Requires nih_panels.xlsx
+
+```{r}
+
+library(here)
+library(ggplot2)
+library(tidyverse)
+
+```
+
+```{r}
+fcs_path <- here("data/raw/facs/")
+flow.dir <- here("data/raw/fcs_analysis")
+flow.files <- list.files(path = flow.dir, pattern = "r[0-9]_men_v3.wsp$", all.files = FALSE, full.names = TRUE, recursive = TRUE, ignore.case = TRUE) 
+print(flow.files)
+```
+
+Make flowSet with just the cells I want in the analysis 
+- All CD45(mid) and (hi) cells i.e. including leucocytes + microglia
+- Also import gates to allow comparison with manual gating
+- Using compensation as optimized in flowJo files
+
+```{r}
+load(here("/res/data_bred.R"))
+md <- data_bred[,c("name","strain","coh","cond")]
+colnames(md)[names(md) == "cond"] <- "condition"
+colnames(md)[names(md) == "name"] <- "sample_id"
+
+# Tidy variables
+md$condition <- factor(md$condition, levels = c("hc", "csd"))
+md$strain <- factor(md$strain, levels = c("wt", "cd19"))
+md$coh <- factor(md$coh, levels = c("r3","r4","r5","r6","r7","r8","r9"), ordered=FALSE)
+head(data.frame(md))
+save(file=here("/res/md.Rmd"),md)
+```
+
+Now make the flowset
+```{r}
+
+# Define gates to import (manually gated cell counts)
+gateNames <- c("MHCII+","MHCII-","helper","cytotoxic","microglia","neut","nk","nkt","b_both","plasmacytoid","cd11b+","cd11b-","ly6c mono") # from flowjo
+# Also import "total leucocytes" gate
+gateNamesPlus <- c(gateNames,"leucocytes") 
+
+rm(fcs_raw_list) # The flowset. Ensure empty to start.
+rm(res_rawer) # The per-cell manual gating information. Ensure empty to start.
+
+# Import flow data
+library(flowWorkspace)
+for ( i in 1:length(flow.files) ){
+  print(flow.files[i])
+  ws <- openWorkspace(flow.files[i])
+  print(ws)
+  b <- parseWorkspace(ws, name="meninges", path=fcs_path,cleanup=FALSE,keep.indices=TRUE,includeGates=TRUE, execute=TRUE)
+  fcs <- getData(b) 
+  res <- list()
+  for (p in 1:length(fcs)){
+    res[[p]] <- matrix(nrow=dim(getData(b[[p]])@exprs)[1],ncol=length(gateNamesPlus),dimnames=list(NULL,gateNamesPlus)) # Make empty indices matrix
+  for (g in 1:length(gateNamesPlus)){
+    res[[p]][,gateNamesPlus[g]] <- getIndices(b[[p]],gateNamesPlus[g])
+  }
+  }
+  if (exists("res_rawer")) { res_rawer <- c(res_rawer,res) } else { res_rawer <- res }
+  if (exists("fcs_raw_list")) { fcs_raw_list <- c(fcs_raw_list,fcs) } else { fcs_raw_list <- fcs }
+closeWorkspace(ws)
+}
+
+# Import antibody information
+library(readxl)
+panel_filename <- "nih_panels.xlsx"
+panel <- read_excel(paste(basedir,"fcs_analysis/",panel_filename,sep=""),sheet="meninges")
+head(data.frame(panel),9)
+panel$Antigen <- gsub("-", "_", panel$Antigen)
+
+```
+
+Metadata for the final set of flow files needs adjusting to allow the exprs for all samples to be combined
+```{r}
+exprs_cols <- panel$Channel[match(colnames(fcs_raw_list[[7]][[1]]@exprs),panel$Channel2)]
+spill_cols <- panel$Spill[match(colnames(fcs_raw_list[[7]][[1]]@description$SPILL),panel$Spill2)]
+
+cbind(colnames(fcs_raw_list[[7]][[1]]@exprs),exprs_cols)
+cbind(colnames(fcs_raw_list[[7]][[1]]@description$SPILL),spill_cols)
+
+adjust <- fsApply(fcs_raw_list[[7]], function(f, exprs_cols){
+  colnames(f) <- exprs_cols
+  f
+},  exprs_cols=exprs_cols)
+
+adjust <- fsApply(adjust, function(f, spill_cols){
+  colnames(f@description$SPILL) <- spill_cols
+  f@description$`$P14N` <- "PE-A"
+  f@description$`$P18N` <- "Alexa Fluor 700-A"
+  f@description$`$P15N` <- "PE-Texas Red-A"
+  f@description$`$P7N` <- "Pacific Blue-A"
+  f@description$`$P21N` <- "PerCP-Cy5-5-A"
+  f
+  }, spill_cols=spill_cols)
+
+# Check these match
+cbind(colnames(fcs_raw_list[[7]][[1]]), colnames(adjust[[1]]))
+cbind(colnames(fcs_raw_list[[7]][[1]]@description$SPILL), colnames(adjust[[1]]@description$SPILL))
+
+# Now reorder the columns for consistency
+cbind(colnames(fcs_raw_list[[1]][[1]]@exprs), colnames(adjust[[1]]@exprs))
+cbind(colnames(fcs_raw_list[[1]][[1]]@description$SPILL), colnames(adjust[[1]]@description$SPILL))
+
+exprs_order <- as.character(colnames(fcs_raw_list[[1]][[1]]))
+adjust <- fsApply(adjust, function(f, exprs_order){
+  f@exprs <- f@exprs[,exprs_order]
+  f
+  }, exprs_order=exprs_order)
+
+# Rearrange the rows for consistency
+library(plyr)
+spill_order <- as.character(colnames(fcs_raw_list[[1]][[1]]@description$SPILL))
+adjust <- fsApply(adjust, function(f, spill_order){
+  f@description$SPILL <- f@description$SPILL[,spill_order]
+  f
+  }, spill_order=spill_order)
+
+# Now the hack for the parameters where the $P22 etc. get reassigned
+adjust <- fsApply(adjust, function(f){
+  pData(f@parameters) <- pData(f@parameters)[match(pData(fcs_raw_list[[1]][[1]]@parameters)$name,pData(adjust[[1]]@parameters)$name),]
+  rownames(pData(f@parameters)) <- rownames(pData(fcs_raw_list[[1]][[1]]@parameters))
+  f
+  })
+
+# Have to change the overall colnames(f) to allow combination but note this renders pData(parameters(fcs_rawer[[50]])) from cohort r9 incorrect (doesn't matter for this analysis) 
+cbind(colnames(fcs_raw_list[[1]][[1]]@exprs), colnames(adjust[[1]]@exprs))
+cbind(colnames(fcs_raw_list[[1]][[1]]@description$SPILL), colnames(adjust[[1]]@description$SPILL))
+cbind(colnames(fcs_raw_list[[1]][[1]]), colnames(adjust[[1]]))
+pData(parameters(adjust[[1]]))
+
+library(flowCore)
+tmp <- rbind2(fcs_raw_list[[1]], fcs_raw_list[[2]])
+tmp2 <- rbind2(tmp, fcs_raw_list[[3]])
+tmp3 <- rbind2(tmp2, fcs_raw_list[[4]])
+tmp4 <- rbind2(tmp3, fcs_raw_list[[5]])
+tmp5 <- rbind2(tmp4, fcs_raw_list[[6]])
+fcs_rawer <- rbind2(tmp5, adjust)
+rm(tmp,tmp2,tmp3,tmp4,tmp5,res,fcs,b)
+
+summary(res_rawer) # i.e. 1.9 to 32 million events per sample (but much of this is dust)
+c(dim(fcs_rawer[[1]]),dim(res_rawer[[1]])) # Check 1st and 3rd number are the same :)
+
+# Rename NK1p1 to NK1.1 to ensure consistency across datasets
+fcs_rawer <- fsApply(fcs_rawer, function(f){
+  if (f@description$`$P12S` %in% "NK1p1"){f@description$`$P12S` <- "NK1.1"}
+  if (f@description$`$P7S` %in% "NK1p1"){f@description$`$P7S` <- "NK1.1"}
+  f
+  })
+
+```
+
+Reject unwanted cells
+```{r}
+load(here("res/counts_good_names_men.R"))
+
+manual<-list() 
+labels.manual <- list() # Make a list with the cell identities, for later comparison with automated results
+fcs_raw <- fcs_rawer # fcs_raw will become a subset of fcs_rawer
+
+# Select all extravascular immune cells (microglia and leucocyte gates)
+for (d in 1:length(fcs_rawer)){
+  manual[[d]] <- rep("Unknown", nrow(fcs_rawer[[d]]))
+    for (i in 1:length(gateNames)){
+    manual[[d]][res_rawer[[d]][,gateNames[i]]]<-counts_good_names_men[i]
+    }
+  manual[[d]] <- factor(manual[[d]], levels = c(counts_good_names_men,"Unknown"), ordered=TRUE)
+  sel1 = res_rawer[[d]][,"microglia"] 
+  sel2 = res_rawer[[d]][,"leucocytes"]
+  selected = "|"(sel1,sel2) 
+  fcs_raw[[d]]@exprs = exprs(fcs_rawer[[d]])[selected,]
+  labels.manual[[d]] = manual[[d]][selected]
+}
+```
+
+Now use flowAI to do quality control of samples
+```{r}
+
+# Remove signal acquisition abnormalities (FS) and dynamic range abnormalities (FM) but not flow rate (FR) abnormalities 
+fcs_raw_qcing <- flow_auto_qc(fcs_raw, remove_from = "FS_FM", output = 2, timeCh = NULL,
+      second_fractionFR = 0.1, alphaFR = 0.01, decompFR = TRUE,
+      ChRemoveFS = c("FSC", "SSC"), outlierFS = FALSE, pen_valueFS = 200,
+      max_cptFS = 3, ChFM = NULL, sideFM = "both", neg_valuesFM = 1,
+      html_report = "_QC", mini_report = "QCmini", fcs_QC = FALSE,
+      fcs_highQ = FALSE, fcs_lowQ = FALSE, folder_results = "resultsQC_post") 
+
+# Now repeat the above command, changing the output argument to "1" to generate the QCed dataset as an output
+fcs_raw_qced <- flow_auto_qc(fcs_raw, remove_from = "FS_FM", output = 1, timeCh = NULL,
+      second_fractionFR = 0.1, alphaFR = 0.01, decompFR = TRUE,
+      ChRemoveFS = c("FSC", "SSC"), outlierFS = FALSE, pen_valueFS = 200,
+      max_cptFS = 3, ChFM = NULL, sideFM = "both", neg_valuesFM = 1,
+      html_report = "_QC", mini_report = "QCmini", fcs_QC = FALSE,
+      fcs_highQ = FALSE, fcs_lowQ = FALSE, folder_results = "resultsQC_post") 
+
+```
+
+Get the manual gating labels for cells which passed QC
+```{r}
+# Check dimensions are consistent:
+cbind(dim(fcs_raw_qced[[2]])[1],dim(fcs_raw_qcing[[2]])[1],length(labels.manual[[2]])) # Last two should be the same
+
+labels.manual.qced <- NULL
+for (i in 1:length(labels.manual)){
+  labels.manual.qced[[i]] <- labels.manual[[i]][fcs_raw_qcing[[i]]@exprs[,"QCvector"] < 10000]
+}
+```
+
+And save:
+```{r}
+save(file=here("res/fcs_raw_qced.Rmd"),fcs_raw_qced)
+save(file=here("res/labels.manual.qced.Rmd"),labels.manual.qced)
+```
+
+```{r}
+
+sessionInfo()
+
+```

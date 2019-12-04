@@ -1,0 +1,170 @@
+
+Import and QC for myeloid splenic data
+
+```{r}
+basedir='/Users/mary/data/nih/'
+setwd('/Users/mary/data/nih/')
+picpath=paste(basedir,"pics/",sep="")
+
+fcs_path <- paste(basedir,"facs/",sep="")
+flow.dir <- paste(basedir,"fcs_analysis",sep="")
+flow.files <- list.files(path = flow.dir, pattern = "r[0-9]_my_v2.wsp$", all.files = FALSE, full.names = TRUE, recursive = TRUE, ignore.case = TRUE) 
+print(flow.files)
+```
+
+This is for MYELOID SPLEEN
+Make flowSet with just the cells I want in the analysis 
+- including all cells in the "live" gate
+- also need to include information on manual labelling, hence including gates
+- have taken all mice together (wt, cd19, hc, stress)
+- using flowJo compensation and transformations as it is
+
+```{r}
+load(paste(basedir,'data_bred.R',sep=""))
+load(paste(basedir,"/analysis/r/counts_good_names_spl.Rmd",sep=""))
+```
+
+```{r}
+# Define gates for manual gating
+gateNames <- c("cdcs_cd11b","cdcs_cd103","cdcs_dn","cdcs_cd103cd11b","pDCs","neutrophils","f4_80_macs","inflamm_mono","Ly6Cpos_CD11b_neg") # must be in same order as counts_good_names_my 
+counts_gate_names_my <- gateNames
+counts_gate_names_my[5:9] <- counts_good_names_spl[10:14]
+counts_good_names_my <- counts_good_names_spl[8:14]
+cbind(gateNames, counts_gate_names_my) # Check equivalence
+
+gateNamesPlus <- c(gateNames,"live") 
+
+rm(fcs_raw_list) # The flowset 
+rm(res_rawer) # The per-cell manual gating information
+
+library(flowWorkspace)
+for ( i in 1:length(flow.files) ){
+  print(flow.files[i])
+  ws <- openWorkspace(flow.files[i])
+  print(ws)
+  b <- parseWorkspace(ws, name="myeloid_spleen", path=fcs_path,cleanup=FALSE,keep.indices=TRUE,includeGates=TRUE, execute=TRUE)
+  fcs <- getData(b) 
+  res <- list()
+  for (p in 1:length(fcs)){
+    res[[p]] <- matrix(nrow=dim(getData(b[[p]])@exprs)[1],ncol=length(gateNamesPlus),dimnames=list(NULL,gateNamesPlus)) # Make empty indices matrix
+  for (g in 1:length(gateNamesPlus)){
+    res[[p]][,gateNamesPlus[g]] <- getIndices(b[[p]],gateNamesPlus[g])
+  }
+  }
+  if (exists("res_rawer")) { res_rawer <- c(res_rawer,res) } else { res_rawer <- res }
+  if (exists("fcs_raw_list")) { fcs_raw_list <- c(fcs_raw_list,fcs) } else { fcs_raw_list <- fcs } #Annoyingly, makes list but not same colnames so can't just rbind2
+closeWorkspace(ws)
+}
+
+cbind(colnames(fcs_raw_list[[1]][[1]]@exprs), colnames(fcs_raw_list[[5]][[1]]@exprs))
+
+library(flowCore)
+tmp <- rbind2(fcs_raw_list[[1]], fcs_raw_list[[2]])
+tmp2 <- rbind2(tmp, fcs_raw_list[[3]])
+tmp3 <- rbind2(tmp2, fcs_raw_list[[4]])
+fcs_rawer <- rbind2(tmp3, fcs_raw_list[[5]])
+rm(tmp,tmp2,tmp3,res,fcs,b)
+
+summary(res_rawer) # 1.9 to 32 million events per sample
+c(dim(fcs_rawer[[1]]),dim(res_rawer[[1]])) # Check 1st and 3rd number are the same 
+
+# Rename NK1.1
+fcs_rawer <- fsApply(fcs_rawer, function(f){
+  if (f@description$`$P12S` %in% "NK1p1"){f@description$`$P12S` <- "NK1.1"}
+  if (f@description$`$P7S` %in% "NK1p1"){f@description$`$P7S` <- "NK1.1"}
+  f
+  })
+
+```
+
+
+Select live cells and their labels
+```{r}
+rm(manual)
+rm(ff)
+rm(labels.manual)
+manual<-list() 
+labels.manual <- list() # manually gated cell identity 
+fcs_raw <- fcs_rawer 
+
+for (d in 1:length(fcs_rawer)){
+  manual[[d]] <- rep("Unknown", nrow(fcs_rawer[[d]]))
+    for (i in 1:length(gateNames)){
+    manual[[d]][res_rawer[[d]][,gateNames[i]]]<-counts_gate_names_my[i]
+    }
+  manual[[d]] <- factor(manual[[d]], levels = c(counts_gate_names_my,"Unknown"), ordered=TRUE)
+  selected = res_rawer[[d]][,"live"] # TRUE FALSE vector for which cells you want to include (we only want to include live)
+  fcs_raw[[d]]@exprs = exprs(fcs_rawer[[d]])[selected,]
+}
+
+newlevs <- c(counts_good_names_my[1],counts_good_names_my[2],counts_good_names_my[2],counts_good_names_my[1], counts_good_names_my[3:7], "Unknown") 
+cbind(levels(manual[[1]][selected]), newlevs) # Check
+
+for (d in 1:length(res_rawer)){
+  selected = res_rawer[[d]][,"live"] 
+  tmp <- manual[[d]][selected]
+  levels(tmp) <- newlevs
+  labels.manual[[d]] <- tmp
+}
+
+
+```
+
+```{r}
+
+fcs_empty_my <- fsApply(fcs_rawer, function(f){
+  expr <- exprs(f)
+  expr <- expr[1:2,]
+  exprs(f) <- expr
+  f
+})
+save(file="fsc_empty_my.R",fcs_empty_my)
+
+```
+
+flowAI to QC the data
+```{r}
+library(flowAI)
+
+fcs_raw_qcing <- flow_auto_qc(fcs_raw, remove_from = "FS_FM", output = 2, timeCh = NULL,
+      second_fractionFR = 0.1, alphaFR = 0.01, decompFR = TRUE,
+      ChRemoveFS = c("FSC", "SSC"), outlierFS = FALSE, pen_valueFS = 200,
+      max_cptFS = 3, ChFM = NULL, sideFM = "both", neg_valuesFM = 1,
+      html_report = "_QC", mini_report = "QCmini", fcs_QC = FALSE,
+      fcs_highQ = FALSE, fcs_lowQ = FALSE, folder_results = "resultsQC_post_my") # Removing signal acquisition (FS) and dynamic range (FM) abnormalities
+
+# Now do again to get the actual flowset to use (just change output to 1) 
+ fcs_raw_qced <- flow_auto_qc(fcs_raw, remove_from = "FS_FM", output = 1, timeCh = NULL,
+      second_fractionFR = 0.1, alphaFR = 0.01, decompFR = TRUE,
+      ChRemoveFS = c("FSC", "SSC"), outlierFS = FALSE, pen_valueFS = 200,
+      max_cptFS = 3, ChFM = NULL, sideFM = "both", neg_valuesFM = 1,
+      html_report = "_QC", mini_report = "QCmini", fcs_QC = FALSE,
+      fcs_highQ = FALSE, fcs_lowQ = FALSE, folder_results = "resQC_post_my") 
+
+# Now need to apply this to the labels to get the indices only for the cells which passed QC
+# First check dimensions are okay:
+cbind(dim(fcs_raw_qced[[2]])[1],dim(fcs_raw_qcing[[2]])[1],length(labels.manual[[2]])) # Last two should be the same
+ 
+labels.manual.qced <- NULL
+for (i in 1:length(labels.manual)){
+labels.manual.qced[[i]] <- labels.manual[[i]][fcs_raw_qcing[[i]]@exprs[,"QCvector"] < 10000] 
+}
+labels.manual.qced.short.my <- lapply(labels.manual.qced, head, 50000)
+
+fcs_raw_qced_short_my <- NULL
+for (i in 1:length(fcs_raw_qced)){
+  fcs_raw_qced_short_my[[i]] <- head(fcs_raw_qced[[i]], 50000)
+} 
+
+min(sapply(labels.manual.qced, length)) 
+tail(fcs_raw_qced_short_my[[40]])
+tail(labels.manual.qced.short.my[[40]],30)
+```
+
+
+And save:
+```{r}
+save(file="fcs_raw_qced_my.Rmd",fcs_raw_qced_short_my)
+save(file="labels.manual.qced_my.Rmd",labels.manual.qced.short.my)
+```
+

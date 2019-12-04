@@ -1,0 +1,37 @@
+---
+title: "Untitled"
+output: html_document
+---
+```{r}
+
+library(here)
+load(here("res/mnn.R")) # Loads combi and sce_reconstucted
+
+```
+
+Look at cell cycle. 
+```{r}
+
+library(scran)
+mm.pairs <- readRDS(system.file("exdata", "mouse_cycle_markers.rds", package="scran"))
+assignments <- cyclone(combi, mm.pairs, gene.names=rowData(combi)$ID, BPPARAM=MulticoreParam()) # Slow 15 mins
+table(assignments$phase) # Get G1, G2M and S
+assignments$Experiment <- combi$Experiment
+assignments$cond <- combi$cond
+
+# Any differences in proportions in each phase by 10X lane or condition?
+signif(100*prop.table(table(assignments$phases, assignments$Experiment), margin = 2),2)
+signif(100*prop.table(table(assignments$phases, assignments$cond), margin = 2),2)
+
+plot(assignments$score$G1, assignments$score$G2M, xlab="G1 score", ylab="G2/M score", pch=16)
+
+colData(combi)$cell_cycle <- assignments$phases
+
+```
+
+```{r}
+
+save(list=c("combi","sce_reconstructed"), file=paste(here("res"), "mnn.R", sep="/"))
+sessionInfo()
+
+```
