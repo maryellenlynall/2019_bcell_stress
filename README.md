@@ -10,6 +10,7 @@
 
 ## bcellstress03.Rmd
 
+- Percentage plots to complement absolute count plots: Figure 3C, S3C boxplots
 - Process splenic count data.
 - Makes:
   - Figure 2B (effects of stress on cell counts)
