@@ -87,7 +87,7 @@
   - Figure S5: correlation plot of meningeal vs. splenic cell counts
   - Figure S3E: Correlations between splenic cell counts and behaviour in stressed group
   - Figure 3H: Correlation between behaviour and cell counts
-  - Figure S9E and S9G: comparison of effects of stress in CD19 and WT mice
+  - Figure S9E, S9G and 5G: comparison of effects of stress in CD19 and WT mice
 
 ## bcellstress14.Rmd
 
