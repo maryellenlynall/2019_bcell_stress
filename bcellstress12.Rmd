@@ -1,5 +1,5 @@
 ---
-title: "stressed menines microarray"
+title: "stressed meninges microarray"
 output: html_document
 ---
 
@@ -14,6 +14,7 @@ Makes:
 
 ```{r}
 
+setwd("/Users/mary/Documents/research/exps/exp030_nih/")
 library(ggplot2)
 library(tidyverse)
 library(magrittr)
@@ -144,6 +145,14 @@ colnames(gse.expFilt) <- pData(gse.expFilt)$mouse
 ```{r}
 rmaC0_men <- rmaC0
 save(list=c("tt","rmaC0_men","gse.expFilt"), file=paste0(here::here(),"/res/rmaC0_men.R"))
+
+# Can start here
+load(paste0(here::here(),"/res/rmaC0_men.R"))
+```
+
+# Saving normalized expression data for GEO
+```{r}
+write.csv(exprs(gse.expFilt), here("res/normalized_expression_matrix.csv"), row.names = TRUE, quote = FALSE)
 ```
 
 ### Hallmarks
@@ -240,8 +249,42 @@ ggsave(p, path=here::here("pics/"), filename = paste0("escarpment_",pathway,"_",
 write.table(strsplit(gseaout@result[gseaout@result$Description==pathway,"core_enrichment"],"/"), file=paste0(here::here("res/"),"leadingedge_",pathway,"_SDvsHC.csv"), col.names = F, row.names = F)
 ```
 
+## Univariate DE genes relevant to neutrophils
+```{r}
+
+neut_list <- rownames(tt)[rownames(tt) %in% c("Itga6","Dpp4","Slc47a1")]
+neut_list <- c(neut_list, sort(rownames(tt)[grep("^Lam|^Sema", rownames(tt))]))
+print(neut_list)
+
+# Get cytokines in order of significance and logFC, 
+tmp <- tt
+tmp <- tmp[order(sign(tmp$logFC)*(1/tmp$P.Value), decreasing = F),] 
+pheatlist <- rownames(tmp)[which(rownames(tmp) %in% neut_list)] 
+tt[pheatlist,c("symbol","logFC","P.Value","adj.P.Val")] 
+
+# Shows trend to decrease in Sema3b with stress
+#         symbol         logFC    P.Value adj.P.Val
+# Sema3b   Sema3b -0.2985522563 0.04989241 0.6181567
+
+# Now only show those with raw p<0.05 which are also a cytokine 
+rawp <- tt[which(tt$P.Value<0.05),]
+
+library(pheatmap)
+pheatmap(exprs(gse.expFilt)[pheatlist[pheatlist %in% rownames(rawp)],], 
+         color = c(rep("black", 25), viridis::inferno(75)),
+         cluster_rows=F, show_rownames=T,
+         show_colnames=T,
+         cluster_cols=FALSE, annotation_col=pData(gse.expFilt)[,"cond",drop=F],
+         scale="row",
+         labels_col = as.character(pData(gse.expFilt)[,"mouse"]), # Falls off margins if don't make it character
+         filename=paste0(here::here("pics/"),"apollo_stress_meninges_pheat_neut.pdf"), width=3.8, height=2.3, main="Meningeal cytokines\nunadjusted p<0.05)",
+         annotation_colors = list(cond = c(HC="light grey", SD="red"))
+         )
+
+```
+
 ## Univariate DE genes
-### Cytokines. FIGURE 4A
+### Cytokines. FIGURE 4A B cell paper
 ```{r}
 load(paste0(here::here("res/"),"genelist_mouse_cyto_chemo_and_binding.R"))
 sprintf("We have loaded a genelist of %d cytokines/chemokines and %d cytokine/chemokine binders", nrow(genelist_mouse_cyto_chemo_and_binding$cyto_chemo), length(genelist_mouse_cyto_chemo_and_binding$cyto_chemo_binding))
